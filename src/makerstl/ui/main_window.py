@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QStatusBar, QMessageBox, QVBoxLayout, QWidget, QSplitter,
     QColorDialog,
 )
-from PySide6.QtCore import Qt, Slot
-from PySide6.QtGui import QAction, QKeySequence, QColor
+from PySide6.QtCore import Qt, Slot, QUrl
+from PySide6.QtGui import QAction, QKeySequence, QColor, QDesktopServices
 
 from ..core.svg_parser import SvgParser
 from ..core.triangulator import triangulate_layers
@@ -108,6 +108,33 @@ class MainWindow(QMainWindow):
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+
+        # Help menu (rightmost on macOS)
+        help_menu = menu_bar.addMenu("&Help")
+
+        about_action = QAction("&About MakerStl", self)
+        about_action.triggered.connect(self._on_about)
+        help_menu.addAction(about_action)
+
+        help_menu.addSeparator()
+
+        update_action = QAction("Check for &Updates...", self)
+        update_action.triggered.connect(self._on_check_updates)
+        help_menu.addAction(update_action)
+
+        help_menu.addSeparator()
+
+        donate_action = QAction("Support on &PayPal", self)
+        donate_action.triggered.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://www.paypal.com/paypalme/DukoneDev")
+        ))
+        help_menu.addAction(donate_action)
+
+        bug_action = QAction("Report a &Bug...", self)
+        bug_action.triggered.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://github.com/Dukonedev/MakerStl/issues/new")
+        ))
+        help_menu.addAction(bug_action)
 
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar")
@@ -288,6 +315,49 @@ class MainWindow(QMainWindow):
         self._gizmo_scale_btn.setChecked(mode == GIZMO_SCALE)
 
     # --- Slots ---
+
+    @Slot()
+    def _on_about(self) -> None:
+        from .. import __version__
+        QMessageBox.about(
+            self,
+            "About MakerStl",
+            f"<h2>MakerStl</h2>"
+            f"<p>Version {__version__}</p>"
+            f"<p>SVG to 3D model converter<br>"
+            f"with color 3MF export for Bambu Studio.</p>"
+            f"<p>GitHub: <a href='https://github.com/Dukonedev/MakerStl'>"
+            f"github.com/Dukonedev/MakerStl</a></p>",
+        )
+
+    @Slot()
+    def _on_check_updates(self) -> None:
+        from ..core.updater import check_for_update
+        from PySide6.QtGui import QDesktopServices as _QDS
+        from PySide6.QtCore import QUrl as _QUrl
+
+        result = check_for_update()
+        if result.has_update:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Update Available")
+            msg.setIcon(QMessageBox.Information)
+            msg.setText(f"MakerStl {result.latest} is available!")
+            msg.setInformativeText(
+                f"You are running version {result.current}.\n"
+                f"Version {result.latest} is ready to download."
+            )
+            if result.release_notes:
+                msg.setDetailedText(result.release_notes)
+            dl_btn = msg.addButton("Download", QMessageBox.AcceptRole)
+            msg.addButton("OK", QMessageBox.RejectRole)
+            msg.exec()
+            if msg.clickedButton() == dl_btn:
+                _QDS.openUrl(_QUrl(result.download_url))
+        else:
+            QMessageBox.information(
+                self, "No Updates",
+                f"You are running the latest version ({result.current}).",
+            )
 
     @Slot()
     def _on_new_project(self) -> None:
