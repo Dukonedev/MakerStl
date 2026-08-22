@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+dist/
+builds/*.dmg
+builds/*.zip
+builds/MakerStl-win/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Session files
+session-*.md

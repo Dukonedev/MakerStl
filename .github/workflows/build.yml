@@ -1,0 +1,102 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  # ─────────────────────────────────────────────
+  #  macOS build
+  # ─────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build .app
+        run: python -m PyInstaller MakerStl.spec --noconfirm
+
+      - name: Create DMG
+        run: |
+          mkdir -p build/dmg-staging
+          cp -R dist/MakerStl.app build/dmg-staging/
+          ln -s /Applications build/dmg-staging/Applications
+          hdiutil create -volname "MakerStl" \
+            -srcfolder build/dmg-staging \
+            -ov -format UDZO \
+            builds/MakerStl.dmg
+          rm -rf build/dmg-staging
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: MakerStl-macOS
+          path: builds/MakerStl.dmg
+
+  # ─────────────────────────────────────────────
+  #  Windows build
+  # ─────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build .exe
+        run: pyinstaller MakerStl.spec --noconfirm
+
+      - name: Zip distribution
+        run: |
+          Compress-Archive -Path dist/MakerStl -DestinationPath builds/MakerStl-windows.zip
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: MakerStl-Windows
+          path: builds/MakerStl-windows.zip
+
+  # ─────────────────────────────────────────────
+  #  Create GitHub Release (only on version tags)
+  # ─────────────────────────────────────────────
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/MakerStl-macOS/MakerStl.dmg
+            artifacts/MakerStl-Windows/MakerStl-windows.zip
+          generate_release_notes: true

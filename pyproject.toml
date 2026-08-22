@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "makerstl"
+version = "0.1.0"
+description = "SVG to 3D model converter with color 3MF export"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6.0",
+    "PyOpenGL>=3.1.7",
+    "svgpathtools>=1.6.1",
+    "shapely>=2.0.0",
+    "mapbox-earcut>=2.0.0",
+    "trimesh>=4.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "lxml>=4.9.0",
+    "pyclipper>=1.4.0",
+]
+
+[project.scripts]
+makerstl = "makerstl.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
