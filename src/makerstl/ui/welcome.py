@@ -10,8 +10,8 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QSizePolicy,
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import Qt, Signal, QSize, QUrl
+from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath, QPen, QPixmap, QDesktopServices
 
 
 class WelcomeScreen(QWidget):
@@ -132,6 +132,16 @@ class WelcomeScreen(QWidget):
                 color: #666666;
                 font-size: 11px;
             }
+            QPushButton#donateBtn {
+                background-color: transparent;
+                color: #888888;
+                border: none;
+                font-size: 12px;
+                padding: 8px;
+            }
+            QPushButton#donateBtn:hover {
+                color: #2680eb;
+            }
         """)
 
         layout = QVBoxLayout(self)
@@ -216,6 +226,19 @@ class WelcomeScreen(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         layout.addWidget(scroll)
+
+        # --- Donate link ---
+        donate_row = QHBoxLayout()
+        donate_row.setContentsMargins(60, 0, 60, 20)
+        donate_row.addStretch()
+        donate_btn = QPushButton("Support MakerStl — Donate via PayPal")
+        donate_btn.setObjectName("donateBtn")
+        donate_btn.setCursor(Qt.PointingHandCursor)
+        donate_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://www.paypal.com/donate?business=dukonedev%40gmail.com&currency_code=EUR")
+        ))
+        donate_row.addWidget(donate_btn)
+        layout.addLayout(donate_row)
 
     def _paint_logo(self, label: QLabel) -> None:
         """Draw a circular logo with 'M' on the label."""
