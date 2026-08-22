@@ -34,7 +34,7 @@ jobs:
 
       - name: Create DMG
         run: |
-          mkdir -p build/dmg-staging
+          mkdir -p builds build/dmg-staging
           cp -R dist/MakerStl.app build/dmg-staging/
           ln -s /Applications build/dmg-staging/Applications
           hdiutil create -volname "MakerStl" \
@@ -72,6 +72,7 @@ jobs:
 
       - name: Zip distribution
         run: |
+          mkdir builds
           Compress-Archive -Path dist/MakerStl -DestinationPath builds/MakerStl-windows.zip
 
       - name: Upload zip
