@@ -235,7 +235,7 @@ class WelcomeScreen(QWidget):
         donate_btn.setObjectName("donateBtn")
         donate_btn.setCursor(Qt.PointingHandCursor)
         donate_btn.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl("https://www.paypal.com/donate?business=dukonedev%40gmail.com&currency_code=EUR")
+            QUrl("https://www.paypal.com/paypalme/DukoneDev")
         ))
         donate_row.addWidget(donate_btn)
         layout.addLayout(donate_row)

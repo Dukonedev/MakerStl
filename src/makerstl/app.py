@@ -5,9 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QSplashScreen
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QPen
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QSplashScreen, QMessageBox
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QPen, QDesktopServices
+from PySide6.QtCore import Qt, QTimer, QUrl
 
 from .ui.main_window import MainWindow
 from .ui.welcome import WelcomeScreen
@@ -118,5 +118,30 @@ def main() -> int:
 
     # show splash for 1200ms, then transition to welcome
     QTimer.singleShot(1200, _show_welcome)
+
+    # --- Check for updates (background, non-blocking) ---
+    from .core.updater import check_for_update
+
+    def _on_update_check():
+        result = check_for_update()
+        if result.has_update:
+            msg = QMessageBox()
+            msg.setWindowTitle("Update Available")
+            msg.setIcon(QMessageBox.Information)
+            msg.setText(f"MakerStl {result.latest} is available!")
+            msg.setInformativeText(
+                f"You are running version {result.current}.\n"
+                f"Version {result.latest} is ready to download."
+            )
+            if result.release_notes:
+                msg.setDetailedText(result.release_notes)
+            dl_btn = msg.addButton("Download", QMessageBox.AcceptRole)
+            msg.addButton("Later", QMessageBox.RejectRole)
+            msg.exec()
+            if msg.clickedButton() == dl_btn:
+                QDesktopServices.openUrl(QUrl(result.download_url))
+
+    # run check after welcome appears
+    QTimer.singleShot(2000, _on_update_check)
 
     return app.exec()
