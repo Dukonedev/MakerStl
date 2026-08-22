@@ -44,6 +44,7 @@ class Viewport3D(QOpenGLWidget):
 
     layer_clicked = Signal(str)
     transform_changed = Signal()  # emitted after gizmo drag completes
+    gizmo_drag_started = Signal()  # emitted when gizmo drag begins
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -435,6 +436,7 @@ class Viewport3D(QOpenGLWidget):
                             layer.extrusion_params.scale_x if self._gizmo_mode == GIZMO_SCALE else 0.0,
                             layer.extrusion_params.scale_y if self._gizmo_mode == GIZMO_SCALE else 0.0,
                         ])
+                self.gizmo_drag_started.emit()
                 self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:

@@ -9,10 +9,10 @@ import numpy as np
 from PySide6.QtWidgets import (
     QMainWindow, QDockWidget, QFileDialog, QMenuBar, QToolBar,
     QStatusBar, QMessageBox, QVBoxLayout, QWidget, QSplitter,
-    QColorDialog,
+    QColorDialog, QLabel,
 )
-from PySide6.QtCore import Qt, Slot, QUrl
-from PySide6.QtGui import QAction, QKeySequence, QColor, QDesktopServices
+from PySide6.QtCore import Qt, Slot, QUrl, QMimeData
+from PySide6.QtGui import QAction, QKeySequence, QColor, QDesktopServices, QDragEnterEvent, QDropEvent
 
 from ..core.svg_parser import SvgParser
 from ..core.triangulator import triangulate_layers
@@ -24,6 +24,7 @@ from .viewport import Viewport3D
 from .layer_panel import LayerPanel
 from .properties import PropertiesPanel
 from .shapes_panel import ShapesPanel
+from . import icons
 
 
 class MainWindow(QMainWindow):
@@ -38,11 +39,251 @@ class MainWindow(QMainWindow):
         self._undo_mgr = UndoManager()
         self._undo_pending = False  # lazy push: one undo state per batch
         self._current_project_path: Path | None = None
+        self._is_dirty = False
 
         self._setup_menus()
         self._setup_toolbar()
         self._setup_panels()
         self._setup_statusbar()
+
+        self.setAcceptDrops(True)
+
+    # ------------------------------------------------------------------
+    # Drag and drop
+    # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                path = url.toLocalFile().lower()
+                if path.endswith(".svg") or path.endswith(".makerstl"):
+                    event.acceptProposedAction()
+                    return
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path.lower().endswith(".svg"):
+                if self._is_dirty or self._project.layers:
+                    # add to existing project
+                    self._import_svg_add_path(Path(path))
+                else:
+                    # empty project — import as new
+                    self._import_svg_path(Path(path))
+                return
+            elif path.lower().endswith(".makerstl"):
+                try:
+                    project = load_project(Path(path))
+                    self._apply_new_project(project, Path(path))
+                    self._statusbar.showMessage(f"Loaded: {path}", 4000)
+                except Exception as e:
+                    QMessageBox.critical(self, "Open Error", f"Failed to open project:\n{e}")
+                return
+
+    def _import_svg_path(self, path: Path) -> None:
+        """Import SVG as a new project (replaces current)."""
+        self._push_undo()
+        try:
+            parser = SvgParser(str(path))
+            svg_layers = parser.parse()
+            doc_w, doc_h = parser.document_size
+            self._project._last_import_dir = path.parent
+            self._project.svg_path = path
+            self._project.name = path.stem
+            self._project.root = LayerGroup(name="Root")
+            self._project.layers = []
+            self._current_project_path = None
+
+            all_verts = np.vstack([sl.vertices for sl in svg_layers if len(sl.vertices) > 0])
+            vmin = all_verts.min(axis=0)
+            vmax = all_verts.max(axis=0)
+            extent = vmax - vmin
+            max_extent = max(extent[0], extent[1])
+            if max_extent > 0:
+                target_size = 100.0
+                norm_scale = target_size / max_extent
+                norm_offset = vmin.copy()
+                for sl in svg_layers:
+                    sl.vertices = (sl.vertices - norm_offset) * norm_scale
+                    sl.hole_verts = [(hv - norm_offset) * norm_scale for hv in sl.hole_verts]
+                for sl in svg_layers:
+                    sl.vertices[:, 1] = extent[1] * norm_scale - sl.vertices[:, 1]
+                    for i in range(len(sl.hole_verts)):
+                        sl.hole_verts[i][:, 1] = extent[1] * norm_scale - sl.hole_verts[i][:, 1]
+                self._project.base_size_x = extent[0] * norm_scale
+                self._project.base_size_y = extent[1] * norm_scale
+                self._project.global_scale = 1.0
+
+            layer_data = [(sl.id, sl.vertices) for sl in svg_layers]
+            hole_data = {sl.id: sl.hole_verts for sl in svg_layers if sl.hole_verts}
+            meshes = triangulate_layers(layer_data, hole_data=hole_data)
+
+            color_groups: dict[tuple[int, int, int], LayerGroup] = {}
+            for sl in svg_layers:
+                ls = LayerState(svg_layer=sl, triangulated_mesh=meshes.get(sl.id), color=sl.color)
+                c = sl.color
+                is_background = c == (255, 255, 255) or c == (0, 0, 0) and sl.fill_opacity < 1.0
+                if is_background:
+                    ls._parent = self._project.root
+                    self._project.root.children.append(ls)
+                else:
+                    if c not in color_groups:
+                        hex_name = f"#{c[0]:02X}{c[1]:02X}{c[2]:02X}"
+                        g = self._project.create_group(hex_name)
+                        g.color = c
+                        color_groups[c] = g
+                    group = color_groups[c]
+                    ls._parent = group
+                    group.children.append(ls)
+
+            self._project._rebuild_flat_list()
+            if self._project.layers:
+                best = max(self._project.layers, key=lambda l: (
+                    (l.svg_layer.vertices.max(axis=0) - l.svg_layer.vertices.min(axis=0)).prod()
+                    if len(l.svg_layer.vertices) >= 3 else 0
+                ))
+                root = self._project.root
+                best_group = best._parent
+                if best_group is not None and best_group is not root:
+                    if best_group in root.children:
+                        root.children.remove(best_group)
+                    best_group._parent = root
+                    root.children.append(best_group)
+                elif best in root.children:
+                    root.children.remove(best)
+                    root.children.append(best)
+                self._project._rebuild_flat_list()
+
+            parts = self._project.recompute_extrusions()
+            self._layer_panel.refresh()
+            self._properties_panel.refresh_dimensions()
+            self._viewport.fit_to_scene()
+            self._update_title()
+            self._mark_dirty()
+            total_verts = sum(p.vertex_count for p in parts)
+            total_faces = sum(p.face_count for p in parts)
+            self._statusbar.showMessage(
+                f"Loaded {len(svg_layers)} layers | "
+                f"{total_verts} vertices, {total_faces} faces | "
+                f"Document: {doc_w:.1f} × {doc_h:.1f} mm", 8000,
+            )
+            self._flush_undo()
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to parse SVG:\n{e}")
+
+    def _import_svg_add_path(self, path: Path) -> None:
+        """Import SVG and add to existing project."""
+        self._push_undo()
+        try:
+            parser = SvgParser(str(path))
+            svg_layers = parser.parse()
+            if not svg_layers:
+                return
+            self._project._last_import_dir = path.parent
+
+            all_verts = np.vstack([sl.vertices for sl in svg_layers if len(sl.vertices) > 0])
+            vmin = all_verts.min(axis=0)
+            vmax = all_verts.max(axis=0)
+            extent = vmax - vmin
+            max_extent = max(extent[0], extent[1])
+            if max_extent > 0:
+                target_size = max(self._project.base_size_x, self._project.base_size_y, 100.0)
+                norm_scale = target_size / max_extent
+                norm_offset = vmin.copy()
+                for sl in svg_layers:
+                    sl.vertices = (sl.vertices - norm_offset) * norm_scale
+                    sl.hole_verts = [(hv - norm_offset) * norm_scale for hv in sl.hole_verts]
+                for sl in svg_layers:
+                    sl.vertices[:, 1] = extent[1] * norm_scale - sl.vertices[:, 1]
+                    for i in range(len(sl.hole_verts)):
+                        sl.hole_verts[i][:, 1] = extent[1] * norm_scale - sl.hole_verts[i][:, 1]
+
+            layer_data = [(sl.id, sl.vertices) for sl in svg_layers]
+            hole_data = {sl.id: sl.hole_verts for sl in svg_layers if sl.hole_verts}
+            meshes = triangulate_layers(layer_data, hole_data=hole_data)
+
+            svg_name = path.stem
+            svg_group = self._project.create_group(svg_name)
+            color_groups: dict[tuple[int, int, int], LayerGroup] = {}
+            for sl in svg_layers:
+                ls = LayerState(svg_layer=sl, triangulated_mesh=meshes.get(sl.id), color=sl.color)
+                c = sl.color
+                is_background = c == (255, 255, 255) or (c == (0, 0, 0) and sl.fill_opacity < 1.0)
+                if is_background:
+                    ls._parent = svg_group
+                    svg_group.children.append(ls)
+                else:
+                    if c not in color_groups:
+                        hex_name = f"#{c[0]:02X}{c[1]:02X}{c[2]:02X}"
+                        g = self._project.create_group(hex_name, parent=svg_group)
+                        g.color = c
+                        color_groups[c] = g
+                    group = color_groups[c]
+                    ls._parent = group
+                    group.children.append(ls)
+
+            self._project._rebuild_flat_list()
+            parts = self._project.recompute_extrusions()
+            self._layer_panel.refresh()
+            self._properties_panel.refresh_dimensions()
+            self._viewport.refresh()
+            total_verts = sum(p.vertex_count for p in parts)
+            total_faces = sum(p.face_count for p in parts)
+            self._statusbar.showMessage(
+                f"Added '{svg_name}' ({len(svg_layers)} layers) | "
+                f"Total: {total_verts} vertices, {total_faces} faces", 8000,
+            )
+            self._flush_undo()
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to parse SVG:\n{e}")
+
+    # ------------------------------------------------------------------
+    # Dirty state & close
+    # ------------------------------------------------------------------
+
+    def _mark_dirty(self) -> None:
+        if not self._is_dirty:
+            self._is_dirty = True
+            self.setWindowModified(True)
+            self._update_title()
+
+    def _mark_clean(self) -> None:
+        self._is_dirty = False
+        self.setWindowModified(False)
+        self._update_title()
+
+    def _update_title(self) -> None:
+        if self._current_project_path:
+            name = self._current_project_path.stem
+        else:
+            name = self._project.name if self._project.name else "Untitled"
+        dirty = "•" if self._is_dirty else ""
+        self.setWindowTitle(f"{dirty}{name} — MakerStl")
+        self.setWindowFilePath(str(self._current_project_path) if self._current_project_path else "")
+
+    def closeEvent(self, event) -> None:
+        if not self._is_dirty:
+            event.accept()
+            return
+
+        name = self._current_project_path.stem if self._current_project_path else "Untitled"
+        ret = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            f'Do you want to save changes to "{name}"?',
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if ret == QMessageBox.Save:
+            self._on_save()
+            if self._is_dirty:
+                event.ignore()
+            else:
+                event.accept()
+        elif ret == QMessageBox.Discard:
+            event.accept()
+        else:
+            event.ignore()
 
     def _setup_menus(self) -> None:
         menu_bar = self.menuBar()
@@ -51,54 +292,72 @@ class MainWindow(QMainWindow):
         file_menu = menu_bar.addMenu("&File")
 
         new_action = QAction("&New Project", self)
+        new_action.setIcon(icons.icon_new())
         new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.setStatusTip("Create a new empty project")
         new_action.triggered.connect(self._on_new_project)
         file_menu.addAction(new_action)
 
         import_action = QAction("&Import SVG...", self)
+        import_action.setIcon(icons.icon_import())
         import_action.setShortcut(QKeySequence("Ctrl+I"))
+        import_action.setStatusTip("Import an SVG file (replaces current project)")
         import_action.triggered.connect(self._on_import_svg)
         file_menu.addAction(import_action)
 
         import_add_action = QAction("Import SVG (&Add)...", self)
+        import_add_action.setIcon(icons.icon_import())
         import_add_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        import_add_action.setStatusTip("Import an SVG file and add layers to current project")
         import_add_action.triggered.connect(self._on_import_svg_add)
         file_menu.addAction(import_add_action)
 
         file_menu.addSeparator()
 
         save_action = QAction("&Save", self)
+        save_action.setIcon(icons.icon_save())
         save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.setStatusTip("Save project to disk")
         save_action.triggered.connect(self._on_save)
         file_menu.addAction(save_action)
 
         save_as_action = QAction("Save &As...", self)
+        save_as_action.setIcon(icons.icon_save())
         save_as_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_action.setStatusTip("Save project to a new location")
         save_as_action.triggered.connect(self._on_save_as)
         file_menu.addAction(save_as_action)
 
         open_action = QAction("&Open Project...", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.setStatusTip("Open a previously saved project")
         open_action.triggered.connect(self._on_open_project)
         file_menu.addAction(open_action)
 
         file_menu.addSeparator()
 
         export_stl_action = QAction("Export &STL...", self)
+        export_stl_action.setIcon(icons.icon_export())
+        export_stl_action.setStatusTip("Export 3D model as STL (no color)")
         export_stl_action.triggered.connect(self._on_export_stl)
         file_menu.addAction(export_stl_action)
 
         export_obj_action = QAction("Export &OBJ...", self)
+        export_obj_action.setIcon(icons.icon_export())
+        export_obj_action.setStatusTip("Export 3D model as OBJ with MTL material file")
         export_obj_action.triggered.connect(self._on_export_obj)
         file_menu.addAction(export_obj_action)
 
         export_3mf_action = QAction("Export &3MF (Color)...", self)
+        export_3mf_action.setIcon(icons.icon_export())
         export_3mf_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        export_3mf_action.setStatusTip("Export color 3MF compatible with Bambu Studio / AMS")
         export_3mf_action.triggered.connect(self._on_export_3mf)
         file_menu.addAction(export_3mf_action)
 
         export_sel_action = QAction("Export 3MF Selection...", self)
         export_sel_action.setShortcut(QKeySequence("Ctrl+Alt+E"))
+        export_sel_action.setStatusTip("Export only the selected layers as 3MF")
         export_sel_action.triggered.connect(self._on_export_3mf_selection)
         file_menu.addAction(export_sel_action)
 
@@ -108,6 +367,67 @@ class MainWindow(QMainWindow):
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+
+        # Edit menu
+        edit_menu = menu_bar.addMenu("&Edit")
+
+        self._menu_undo = QAction("&Undo", self)
+        self._menu_undo.setIcon(icons.icon_undo())
+        self._menu_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        self._menu_undo.setEnabled(False)
+        self._menu_undo.triggered.connect(self._undo)
+        edit_menu.addAction(self._menu_undo)
+
+        self._menu_redo = QAction("&Redo", self)
+        self._menu_redo.setIcon(icons.icon_redo())
+        self._menu_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        self._menu_redo.setEnabled(False)
+        self._menu_redo.triggered.connect(self._redo)
+        edit_menu.addAction(self._menu_redo)
+
+        # View menu
+        view_menu = menu_bar.addMenu("&View")
+
+        self._view_properties = QAction("&Properties Panel", self)
+        self._view_properties.setCheckable(True)
+        self._view_properties.setChecked(True)
+        self._view_properties.setShortcut(QKeySequence("Ctrl+1"))
+        view_menu.addAction(self._view_properties)
+
+        self._view_shapes = QAction("&Shapes Panel", self)
+        self._view_shapes.setCheckable(True)
+        self._view_shapes.setChecked(True)
+        self._view_shapes.setShortcut(QKeySequence("Ctrl+2"))
+        view_menu.addAction(self._view_shapes)
+
+        view_menu.addSeparator()
+
+        self._view_gizmo_translate = QAction("Gizmo: &Move", self)
+        self._view_gizmo_translate.setCheckable(True)
+        self._view_gizmo_translate.setChecked(True)
+        self._view_gizmo_translate.setShortcut(QKeySequence("Q"))
+        self._view_gizmo_translate.triggered.connect(lambda: self._set_gizmo_mode(0))
+        view_menu.addAction(self._view_gizmo_translate)
+
+        self._view_gizmo_rotate = QAction("Gizmo: &Rotate", self)
+        self._view_gizmo_rotate.setCheckable(True)
+        self._view_gizmo_rotate.setShortcut(QKeySequence("W"))
+        self._view_gizmo_rotate.triggered.connect(lambda: self._set_gizmo_mode(1))
+        view_menu.addAction(self._view_gizmo_rotate)
+
+        self._view_gizmo_scale = QAction("Gizmo: &Scale", self)
+        self._view_gizmo_scale.setCheckable(True)
+        self._view_gizmo_scale.setShortcut(QKeySequence("E"))
+        self._view_gizmo_scale.triggered.connect(lambda: self._set_gizmo_mode(2))
+        view_menu.addAction(self._view_gizmo_scale)
+
+        view_menu.addSeparator()
+
+        fit_action = QAction("&Fit to Scene", self)
+        fit_action.setShortcut(QKeySequence("F"))
+        fit_action.setStatusTip("Frame all geometry in the viewport")
+        fit_action.triggered.connect(lambda: self._viewport.fit_to_scene())
+        view_menu.addAction(fit_action)
 
         # Help menu (rightmost on macOS)
         help_menu = menu_bar.addMenu("&Help")
@@ -136,70 +456,87 @@ class MainWindow(QMainWindow):
         ))
         help_menu.addAction(bug_action)
 
+        # Wire dock toggle actions
+        self._properties_dock = None  # will be set in _setup_panels
+        self._shapes_dock = None
+        self._view_properties.triggered.connect(self._toggle_properties_dock)
+        self._view_shapes.triggered.connect(self._toggle_shapes_dock)
+
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        new_btn = QAction("New", self)
+        new_btn = QAction(icons.icon_new(), "New", self)
         new_btn.setShortcut(QKeySequence.StandardKey.New)
+        new_btn.setStatusTip("New project (Ctrl+N)")
         new_btn.triggered.connect(self._on_new_project)
         toolbar.addAction(new_btn)
 
-        import_btn = QAction("Import SVG", self)
+        import_btn = QAction(icons.icon_import(), "Import SVG", self)
+        import_btn.setStatusTip("Import SVG — replaces current project (Ctrl+I)")
         import_btn.triggered.connect(self._on_import_svg)
         toolbar.addAction(import_btn)
 
-        import_add_btn = QAction("Add SVG", self)
+        import_add_btn = QAction(icons.icon_import(), "Add SVG", self)
+        import_add_btn.setStatusTip("Import SVG and add layers to current project (Ctrl+Shift+I)")
         import_add_btn.triggered.connect(self._on_import_svg_add)
         toolbar.addAction(import_add_btn)
 
-        self._save_btn = QAction("Save", self)
+        self._save_btn = QAction(icons.icon_save(), "Save", self)
         self._save_btn.setShortcut(QKeySequence.StandardKey.Save)
+        self._save_btn.setStatusTip("Save project (Ctrl+S)")
         self._save_btn.triggered.connect(self._on_save)
         toolbar.addAction(self._save_btn)
 
-        self._save_as_btn = QAction("Save As", self)
+        self._save_as_btn = QAction(icons.icon_save(), "Save As", self)
         self._save_as_btn.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._save_as_btn.setStatusTip("Save project to a new location")
         self._save_as_btn.triggered.connect(self._on_save_as)
         toolbar.addAction(self._save_as_btn)
 
         toolbar.addSeparator()
 
-        self._undo_action = QAction("Undo", self)
+        self._undo_action = QAction(icons.icon_undo(), "Undo", self)
         self._undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self._undo_action.setEnabled(False)
+        self._undo_action.setStatusTip("Undo last action (Ctrl+Z)")
         self._undo_action.triggered.connect(self._undo)
         toolbar.addAction(self._undo_action)
 
-        self._redo_action = QAction("Redo", self)
+        self._redo_action = QAction(icons.icon_redo(), "Redo", self)
         self._redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self._redo_action.setEnabled(False)
+        self._redo_action.setStatusTip("Redo last undone action (Ctrl+Shift+Z)")
         self._redo_action.triggered.connect(self._redo)
         toolbar.addAction(self._redo_action)
 
         toolbar.addSeparator()
 
-        export_3mf_btn = QAction("Export 3MF", self)
+        export_3mf_btn = QAction(icons.icon_export(), "Export 3MF", self)
+        export_3mf_btn.setStatusTip("Export color 3MF for Bambu Studio (Ctrl+Shift+E)")
         export_3mf_btn.triggered.connect(self._on_export_3mf)
         toolbar.addAction(export_3mf_btn)
 
         toolbar.addSeparator()
 
         # gizmo mode buttons
-        self._gizmo_translate_btn = QAction("Move", self)
+        self._gizmo_translate_btn = QAction(icons.icon_move(), "Move", self)
         self._gizmo_translate_btn.setCheckable(True)
         self._gizmo_translate_btn.setChecked(True)
+        self._gizmo_translate_btn.setStatusTip("Move gizmo — drag to translate selected layer (Q)")
         self._gizmo_translate_btn.triggered.connect(lambda: self._set_gizmo_mode(0))
         toolbar.addAction(self._gizmo_translate_btn)
 
-        self._gizmo_rotate_btn = QAction("Rotate", self)
+        self._gizmo_rotate_btn = QAction(icons.icon_rotate(), "Rotate", self)
         self._gizmo_rotate_btn.setCheckable(True)
+        self._gizmo_rotate_btn.setStatusTip("Rotate gizmo — drag to rotate selected layer (W)")
         self._gizmo_rotate_btn.triggered.connect(lambda: self._set_gizmo_mode(1))
         toolbar.addAction(self._gizmo_rotate_btn)
 
-        self._gizmo_scale_btn = QAction("Scale", self)
+        self._gizmo_scale_btn = QAction(icons.icon_scale(), "Scale", self)
         self._gizmo_scale_btn.setCheckable(True)
+        self._gizmo_scale_btn.setStatusTip("Scale gizmo — drag to scale selected layer (E)")
         self._gizmo_scale_btn.triggered.connect(lambda: self._set_gizmo_mode(2))
         toolbar.addAction(self._gizmo_scale_btn)
 
@@ -207,6 +544,8 @@ class MainWindow(QMainWindow):
         # 3D Viewport (central widget)
         self._viewport = Viewport3D(self._project)
         self._viewport.layer_clicked.connect(self._on_viewport_click)
+        self._viewport.gizmo_drag_started.connect(self._push_undo)
+        self._viewport.transform_changed.connect(self._on_gizmo_transform)
         self.setCentralWidget(self._viewport)
 
         # Properties Panel
@@ -237,25 +576,33 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)  # layers gets 2/3
         right_layout.addWidget(splitter)
 
-        right_dock = QDockWidget("Properties", self)
-        right_dock.setWidget(right_widget)
-        right_dock.setMinimumWidth(280)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, right_dock)
+        self._properties_dock = QDockWidget("Properties", self)
+        self._properties_dock.setWidget(right_widget)
+        self._properties_dock.setMinimumWidth(280)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._properties_dock)
 
         # Left dock: Shapes panel
         self._shapes_panel = ShapesPanel()
         self._shapes_panel.shape_requested.connect(self._on_shape_requested)
         self._shapes_panel.text_requested.connect(self._on_text_requested)
-        shapes_dock = QDockWidget("Shapes", self)
-        shapes_dock.setWidget(self._shapes_panel)
-        shapes_dock.setMinimumWidth(140)
-        shapes_dock.setMaximumWidth(160)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, shapes_dock)
+        self._shapes_dock = QDockWidget("Shapes", self)
+        self._shapes_dock.setWidget(self._shapes_panel)
+        self._shapes_dock.setMinimumWidth(140)
+        self._shapes_dock.setMaximumWidth(160)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._shapes_dock)
 
     def _setup_statusbar(self) -> None:
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
         self._statusbar.showMessage("Ready — Import an SVG file to begin")
+
+    def _toggle_properties_dock(self, checked: bool) -> None:
+        if self._properties_dock:
+            self._properties_dock.setVisible(checked)
+
+    def _toggle_shapes_dock(self, checked: bool) -> None:
+        if self._shapes_dock:
+            self._shapes_dock.setVisible(checked)
 
     # --- Undo / Redo ---
 
@@ -267,6 +614,9 @@ class MainWindow(QMainWindow):
         self._undo_pending = True
         self._undo_action.setEnabled(self._undo_mgr.can_undo)
         self._redo_action.setEnabled(self._undo_mgr.can_redo)
+        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
+        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
+        self._mark_dirty()
 
     def _flush_undo(self) -> None:
         """Mark batch as complete so next change creates a new undo state."""
@@ -284,6 +634,8 @@ class MainWindow(QMainWindow):
         self._refresh_after_undo()
         self._undo_action.setEnabled(self._undo_mgr.can_undo)
         self._redo_action.setEnabled(self._undo_mgr.can_redo)
+        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
+        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
 
     def _redo(self) -> None:
         current = self._undo_mgr.snapshot(self._project)
@@ -295,6 +647,8 @@ class MainWindow(QMainWindow):
         self._refresh_after_undo()
         self._undo_action.setEnabled(self._undo_mgr.can_undo)
         self._redo_action.setEnabled(self._undo_mgr.can_redo)
+        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
+        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
 
     def _refresh_after_undo(self) -> None:
         """Refresh all panels after an undo/redo operation."""
@@ -304,7 +658,10 @@ class MainWindow(QMainWindow):
         self._viewport.refresh()
         self._properties_panel.refresh_dimensions()
         self._viewport.fit_to_scene()
-        self._statusbar.showMessage("Undone" if not self._undo_mgr.can_redo else "Redone")
+        self._undo_action.setEnabled(self._undo_mgr.can_undo)
+        self._redo_action.setEnabled(self._undo_mgr.can_redo)
+        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
+        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
 
     def _set_gizmo_mode(self, mode: int) -> None:
         """Switch gizmo mode and update toolbar button states."""
@@ -313,22 +670,31 @@ class MainWindow(QMainWindow):
         self._gizmo_translate_btn.setChecked(mode == GIZMO_TRANSLATE)
         self._gizmo_rotate_btn.setChecked(mode == GIZMO_ROTATE)
         self._gizmo_scale_btn.setChecked(mode == GIZMO_SCALE)
+        self._view_gizmo_translate.setChecked(mode == GIZMO_TRANSLATE)
+        self._view_gizmo_rotate.setChecked(mode == GIZMO_ROTATE)
+        self._view_gizmo_scale.setChecked(mode == GIZMO_SCALE)
 
     # --- Slots ---
 
     @Slot()
     def _on_about(self) -> None:
         from .. import __version__
-        QMessageBox.about(
-            self,
-            "About MakerStl",
-            f"<h2>MakerStl</h2>"
-            f"<p>Version {__version__}</p>"
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About MakerStl")
+        msg.setIconPixmap(icons.icon_new().pixmap(64, 64))
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            f"<h2 style='margin-bottom:4px'>MakerStl</h2>"
+            f"<p style='color:#888; margin-top:0'>Version {__version__}</p>"
             f"<p>SVG to 3D model converter<br>"
-            f"with color 3MF export for Bambu Studio.</p>"
-            f"<p>GitHub: <a href='https://github.com/Dukonedev/MakerStl'>"
-            f"github.com/Dukonedev/MakerStl</a></p>",
+            f"with color 3MF export for Bambu Studio / AMS.</p>"
+            f"<hr style='border-color:#555'>"
+            f"<p><a href='https://github.com/Dukonedev/MakerStl'>GitHub Repository</a></p>"
+            f"<p><a href='https://github.com/Dukonedev/MakerStl/releases'>Releases</a></p>"
+            f"<p style='color:#888; font-size:11px; margin-top:12px'>"
+            f"Copyright &copy; 2026 DukoneDev</p>"
         )
+        msg.exec()
 
     @Slot()
     def _on_check_updates(self) -> None:
@@ -368,12 +734,14 @@ class MainWindow(QMainWindow):
         self._undo_mgr.clear()
         self._undo_action.setEnabled(False)
         self._redo_action.setEnabled(False)
-        self.setWindowTitle("MakerStl — Untitled")
+        self._menu_undo.setEnabled(False)
+        self._menu_redo.setEnabled(False)
+        self._update_title()
         self._viewport.set_project(self._project)
         self._layer_panel.set_project(self._project)
         self._properties_panel.set_project(self._project)
         self._refresh_after_undo()
-        self._statusbar.showMessage("New empty project")
+        self._statusbar.showMessage("New empty project", 4000)
 
     @Slot()
     def _on_import_svg(self) -> None:
@@ -499,14 +867,16 @@ class MainWindow(QMainWindow):
             self._layer_panel.refresh()
             self._properties_panel.refresh_dimensions()
             self._viewport.fit_to_scene()
-            self.setWindowTitle(f"MakerStl — {self._project.name}")
+            self._update_title()
+            self._mark_dirty()
 
             total_verts = sum(p.vertex_count for p in parts)
             total_faces = sum(p.face_count for p in parts)
             self._statusbar.showMessage(
                 f"Loaded {len(svg_layers)} layers | "
                 f"{total_verts} vertices, {total_faces} faces | "
-                f"Document: {doc_w:.1f} × {doc_h:.1f} mm"
+                f"Document: {doc_w:.1f} × {doc_h:.1f} mm",
+                8000,
             )
             self._flush_undo()
 
@@ -609,7 +979,8 @@ class MainWindow(QMainWindow):
             total_faces = sum(p.face_count for p in parts)
             self._statusbar.showMessage(
                 f"Added '{svg_name}' ({len(svg_layers)} layers) | "
-                f"Total: {total_verts} vertices, {total_faces} faces"
+                f"Total: {total_verts} vertices, {total_faces} faces",
+                8000,
             )
             self._flush_undo()
 
@@ -629,7 +1000,7 @@ class MainWindow(QMainWindow):
         parts = self._project.recompute_extrusions()
         try:
             export_stl(parts, path)
-            self._statusbar.showMessage(f"Exported STL: {path}")
+            self._statusbar.showMessage(f"Exported STL: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export STL:\n{e}")
 
@@ -646,7 +1017,7 @@ class MainWindow(QMainWindow):
         parts = self._project.recompute_extrusions()
         try:
             export_obj(parts, path)
-            self._statusbar.showMessage(f"Exported OBJ: {path}")
+            self._statusbar.showMessage(f"Exported OBJ: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export OBJ:\n{e}")
 
@@ -663,7 +1034,7 @@ class MainWindow(QMainWindow):
         parts = self._project.recompute_extrusions()
         try:
             export_3mf(parts, path, title=self._project.name)
-            self._statusbar.showMessage(f"Exported 3MF: {path}")
+            self._statusbar.showMessage(f"Exported 3MF: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export 3MF:\n{e}")
 
@@ -694,7 +1065,7 @@ class MainWindow(QMainWindow):
 
         try:
             export_3mf(selected_parts, path, title=f"{self._project.name} (selection)")
-            self._statusbar.showMessage(f"Exported selection ({len(selected_parts)} parts): {path}")
+            self._statusbar.showMessage(f"Exported selection ({len(selected_parts)} parts): {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export selection:\n{e}")
 
@@ -725,8 +1096,8 @@ class MainWindow(QMainWindow):
         try:
             save_project(self._project, path)
             self._current_project_path = path
-            self.setWindowTitle(f"MakerStl — {path.stem}")
-            self._statusbar.showMessage(f"Saved: {path}")
+            self._mark_clean()
+            self._statusbar.showMessage(f"Saved: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save project:\n{e}")
 
@@ -741,7 +1112,7 @@ class MainWindow(QMainWindow):
         try:
             project = load_project(Path(path))
             self._apply_new_project(project, Path(path))
-            self._statusbar.showMessage(f"Loaded: {path}")
+            self._statusbar.showMessage(f"Loaded: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Open Error", f"Failed to open project:\n{e}")
 
@@ -750,7 +1121,7 @@ class MainWindow(QMainWindow):
         try:
             project = load_project(path)
             self._apply_new_project(project, path)
-            self._statusbar.showMessage(f"Loaded: {path}")
+            self._statusbar.showMessage(f"Loaded: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Open Error", f"Failed to open project:\n{e}")
 
@@ -761,7 +1132,9 @@ class MainWindow(QMainWindow):
         self._undo_mgr.clear()
         self._undo_action.setEnabled(False)
         self._redo_action.setEnabled(False)
-        self.setWindowTitle(f"MakerStl — {path.stem}")
+        self._menu_undo.setEnabled(False)
+        self._menu_redo.setEnabled(False)
+        self._mark_clean()
         # re-point all panels to the new project
         self._viewport.set_project(project)
         self._layer_panel.set_project(project)
@@ -818,6 +1191,13 @@ class MainWindow(QMainWindow):
         self._properties_panel.set_layers([layer_id])
         self._viewport.highlight_layer(layer_id)
 
+    @Slot()
+    def _on_gizmo_transform(self) -> None:
+        """Gizmo drag completed — refresh panels and push undo."""
+        self._properties_panel.refresh_dimensions()
+        self._layer_panel.refresh()
+        self._statusbar.showMessage("Transform applied", 3000)
+
     @Slot(list)
     def _on_merge_layers(self, layer_ids: list[str]) -> None:
         if len(layer_ids) < 2:
@@ -844,9 +1224,9 @@ class MainWindow(QMainWindow):
             self._project.recompute_extrusions()
             self._layer_panel.refresh()
             self._viewport.refresh()
-            self._statusbar.showMessage(f"Subtracted {len(cutter_ids)} layer(s) from base")
+            self._statusbar.showMessage(f"Subtracted {len(cutter_ids)} layer(s) from base", 4000)
         else:
-            self._statusbar.showMessage("Subtract failed — no geometry remaining")
+            self._statusbar.showMessage("Subtract failed — no geometry remaining", 4000)
         self._flush_undo()
 
     @Slot(str, float, float)
@@ -976,5 +1356,5 @@ class MainWindow(QMainWindow):
         self._layer_panel.refresh()
         self._properties_panel.refresh_dimensions()
         self._viewport.fit_to_scene()
-        self._statusbar.showMessage(f"Added text: \"{text}\" ({len(shapes)} characters)")
+        self._statusbar.showMessage(f"Added text: \"{text}\" ({len(shapes)} characters)", 4000)
         self._flush_undo()

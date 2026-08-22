@@ -298,4 +298,103 @@ QInputDialog QLabel {
 QColorDialog {
     background: #3c3c3c;
 }
+
+/* ---- Line edits ---- */
+QLineEdit {
+    background-color: #3c3c3c;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 4px 6px;
+    font-size: 12px;
+    selection-background-color: #2680eb;
+}
+QLineEdit:focus {
+    border: 1px solid #2680eb;
+}
+
+/* ---- Combo boxes ---- */
+QComboBox {
+    background-color: #3c3c3c;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 4px 6px;
+    font-size: 12px;
+}
+QComboBox:hover {
+    border-color: #666;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid #555;
+}
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #888;
+    margin: 0 4px;
+}
+QComboBox QAbstractItemView {
+    background-color: #3c3c3c;
+    color: #ddd;
+    border: 1px solid #555;
+    selection-background-color: #2680eb;
+    selection-color: #fff;
+}
+
+/* ---- Check / Radio ---- */
+QCheckBox, QRadioButton {
+    color: #ccc;
+    spacing: 6px;
+    font-size: 12px;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #666;
+    border-radius: 2px;
+    background: #3c3c3c;
+}
+QRadioButton::indicator {
+    border-radius: 8px;
+}
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background: #2680eb;
+    border-color: #2680eb;
+}
+QCheckBox:hover, QRadioButton:hover {
+    color: #fff;
+}
+
+/* ---- Tooltips ---- */
+QToolTip {
+    background-color: #1a1a1a;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+/* ---- List widget ---- */
+QListWidget {
+    background-color: #2a2a2a;
+    color: #ccc;
+    border: none;
+    outline: none;
+}
+QListWidget::item {
+    padding: 4px 6px;
+}
+QListWidget::item:selected {
+    background-color: #2680eb;
+    color: #fff;
+}
+QListWidget::item:hover:!selected {
+    background-color: #3a3a3a;
+}
 """

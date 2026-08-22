@@ -120,28 +120,49 @@ def main() -> int:
     QTimer.singleShot(1200, _show_welcome)
 
     # --- Check for updates (background, non-blocking) ---
-    from .core.updater import check_for_update
+    _update_thread = None  # prevent GC
 
     def _on_update_check():
-        result = check_for_update()
-        if result.has_update:
-            msg = QMessageBox()
-            msg.setWindowTitle("Update Available")
-            msg.setIcon(QMessageBox.Information)
-            msg.setText(f"MakerStl {result.latest} is available!")
-            msg.setInformativeText(
-                f"You are running version {result.current}.\n"
-                f"Version {result.latest} is ready to download."
-            )
-            if result.release_notes:
-                msg.setDetailedText(result.release_notes)
-            dl_btn = msg.addButton("Download", QMessageBox.AcceptRole)
-            msg.addButton("Later", QMessageBox.RejectRole)
-            msg.exec()
-            if msg.clickedButton() == dl_btn:
-                QDesktopServices.openUrl(QUrl(result.download_url))
+        nonlocal _update_thread
+        try:
+            from .core.updater import check_for_update
+            from PySide6.QtCore import QThread, Signal as _Signal
 
-    # run check after welcome appears
+            class _UpdateThread(QThread):
+                _result_ready = _Signal(object)
+
+                def run(self):
+                    try:
+                        result = check_for_update()
+                        self._result_ready.emit(result)
+                    except Exception:
+                        pass
+
+            def _on_done(result):
+                if result.has_update:
+                    msg = QMessageBox()
+                    msg.setWindowTitle("Update Available")
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setText(f"MakerStl {result.latest} is available!")
+                    msg.setInformativeText(
+                        f"You are running version {result.current}.\n"
+                        f"Version {result.latest} is ready to download."
+                    )
+                    if result.release_notes:
+                        msg.setDetailedText(result.release_notes)
+                    dl_btn = msg.addButton("Download", QMessageBox.AcceptRole)
+                    msg.addButton("Later", QMessageBox.RejectRole)
+                    msg.exec()
+                    if msg.clickedButton() == dl_btn:
+                        QDesktopServices.openUrl(QUrl(result.download_url))
+
+            _update_thread = _UpdateThread()
+            _update_thread._result_ready.connect(_on_done)
+            _update_thread.finished.connect(_update_thread.deleteLater)
+            _update_thread.start()
+        except Exception:
+            pass
+
     QTimer.singleShot(2000, _on_update_check)
 
     return app.exec()
