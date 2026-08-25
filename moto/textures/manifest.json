@@ -1,0 +1,250 @@
+{
+  "categories": [
+    {
+      "id": "fabric",
+      "label": "Fabric",
+      "textures": [
+        {
+          "name": "Basket",
+          "file": "basket.png",
+          "thumb": "thumbs/basket.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Knitting",
+          "file": "knitting.png",
+          "thumb": "thumbs/knitting.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Leather2",
+          "file": "leather2.png",
+          "thumb": "thumbs/leather2.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Weave",
+          "file": "weave.png",
+          "thumb": "thumbs/weave.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Weave 02",
+          "file": "weave_02.jpg",
+          "thumb": "thumbs/weave_02.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Weave 03",
+          "file": "weave_03.jpg",
+          "thumb": "thumbs/weave_03.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    },
+    {
+      "id": "geometric",
+      "label": "Geometric",
+      "textures": [
+        {
+          "name": "Tiles 08 Height",
+          "file": "Tiles_08_height.jpg",
+          "thumb": "thumbs/Tiles_08_height.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Dots",
+          "file": "dots.png",
+          "thumb": "thumbs/dots.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Grid",
+          "file": "grid.png",
+          "thumb": "thumbs/grid.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Hexagon",
+          "file": "hexagon.jpg",
+          "thumb": "thumbs/hexagon.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Hexagons",
+          "file": "hexagons.jpg",
+          "thumb": "thumbs/hexagons.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Isogrid",
+          "file": "isogrid.png",
+          "thumb": "thumbs/isogrid.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Stripes",
+          "file": "stripes.png",
+          "thumb": "thumbs/stripes.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Stripes 02",
+          "file": "stripes_02.png",
+          "thumb": "thumbs/stripes_02.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Voronoi",
+          "file": "voronoi.jpg",
+          "thumb": "thumbs/voronoi.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    },
+    {
+      "id": "stone",
+      "label": "Stone",
+      "textures": [
+        {
+          "name": "Stylized 16 Stone Floor Height",
+          "file": "Stylized_16_Stone_Floor_height.jpg",
+          "thumb": "thumbs/Stylized_16_Stone_Floor_height.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Cobblestone 02 Disp 4k",
+          "file": "cobblestone_02_disp_4k.png",
+          "thumb": "thumbs/cobblestone_02_disp_4k.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    },
+    {
+      "id": "surface",
+      "label": "Surface",
+      "textures": [
+        {
+          "name": "Brick",
+          "file": "brick.png",
+          "thumb": "thumbs/brick.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Bubble",
+          "file": "bubble.png",
+          "thumb": "thumbs/bubble.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Carbon Fiber",
+          "file": "carbonFiber.jpg",
+          "thumb": "thumbs/carbonFiber.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Crystal",
+          "file": "crystal.png",
+          "thumb": "thumbs/crystal.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Grip Surface",
+          "file": "gripSurface.jpg",
+          "thumb": "thumbs/gripSurface.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Knurling",
+          "file": "knurling.jpg",
+          "thumb": "thumbs/knurling.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Noise",
+          "file": "noise.jpg",
+          "thumb": "thumbs/noise.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    },
+    {
+      "id": "wall",
+      "label": "Wall",
+      "textures": [
+        {
+          "name": "Brick Wall09 4k Height",
+          "file": "BrickWall09_4K_Height.png",
+          "thumb": "thumbs/BrickWall09_4K_Height.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Brick Wall23 4k Ao",
+          "file": "BrickWall23_4K_AO.png",
+          "thumb": "thumbs/BrickWall23_4K_AO.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Bricks082a 2k Displacement",
+          "file": "Bricks082A_2K_Displacement.jpg",
+          "thumb": "thumbs/Bricks082A_2K_Displacement.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Stylized 13 Roof Square Glossiness",
+          "file": "Stylized_13_RoofSquare_glossiness.jpg",
+          "thumb": "thumbs/Stylized_13_RoofSquare_glossiness.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Tiles Wall 01 Glossiness",
+          "file": "Tiles_Wall_01_glossiness.jpg",
+          "thumb": "thumbs/Tiles_Wall_01_glossiness.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    },
+    {
+      "id": "wood",
+      "label": "Wood",
+      "textures": [
+        {
+          "name": "Wood",
+          "file": "wood.jpg",
+          "thumb": "thumbs/wood.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Woodgrain 02",
+          "file": "woodgrain_02.jpg",
+          "thumb": "thumbs/woodgrain_02.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Woodgrain 03",
+          "file": "woodgrain_03.jpg",
+          "thumb": "thumbs/woodgrain_03.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    },
+    {
+      "id": "wood2",
+      "label": "Wood2",
+      "textures": [
+        {
+          "name": "Bamboo 01 Glossiness",
+          "file": "Bamboo_01_glossiness.jpg",
+          "thumb": "thumbs/Bamboo_01_glossiness.webp",
+          "defaultScale": 0.5
+        },
+        {
+          "name": "Tiles 02 Glossiness",
+          "file": "Tiles_02_glossiness.jpg",
+          "thumb": "thumbs/Tiles_02_glossiness.webp",
+          "defaultScale": 0.5
+        }
+      ]
+    }
+  ]
+}

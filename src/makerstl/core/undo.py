@@ -8,27 +8,27 @@ from dataclasses import dataclass, field
 
 @dataclass
 class UndoManager:
-    """Maintains undo/redo stacks of project snapshots."""
+    """Maintains undo/redo stacks of project snapshots with action names."""
 
-    _undo_stack: list[dict] = field(default_factory=list, repr=False)
-    _redo_stack: list[dict] = field(default_factory=list, repr=False)
+    _undo_stack: list[tuple[str, dict]] = field(default_factory=list, repr=False)
+    _redo_stack: list[tuple[str, dict]] = field(default_factory=list, repr=False)
     _max_depth: int = 50
 
-    def push(self, snapshot: dict) -> None:
+    def push(self, snapshot: dict, action: str = "Edit") -> None:
         """Save current state to undo stack, clear redo."""
-        self._undo_stack.append(snapshot)
+        self._undo_stack.append((action, snapshot))
         if len(self._undo_stack) > self._max_depth:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
 
-    def undo(self) -> dict | None:
-        """Return previous state, push current to redo. None if empty."""
+    def undo(self) -> tuple[str, dict] | None:
+        """Return (action_name, previous state), push current to redo. None if empty."""
         if not self._undo_stack:
             return None
         return self._undo_stack.pop()
 
-    def redo(self) -> dict | None:
-        """Return next state, push current to undo. None if empty."""
+    def redo(self) -> tuple[str, dict] | None:
+        """Return (action_name, next state), push current to undo. None if empty."""
         if not self._redo_stack:
             return None
         return self._redo_stack.pop()
@@ -68,6 +68,14 @@ class UndoManager:
     @property
     def can_redo(self) -> bool:
         return len(self._redo_stack) > 0
+
+    @property
+    def undo_names(self) -> list[str]:
+        return [name for name, _ in reversed(self._undo_stack)]
+
+    @property
+    def redo_names(self) -> list[str]:
+        return [name for name, _ in self._redo_stack]
 
     def clear(self) -> None:
         self._undo_stack.clear()

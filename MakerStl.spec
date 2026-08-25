@@ -20,6 +20,7 @@ else:
 datas = [
     ('Banner.jpeg', '.'),
     ('splash_screen.jpeg', '.'),
+    ('src/makerstl/shaders', 'makerstl/shaders'),
 ]
 if is_macos:
     datas.append(('resources/app-icon.icns', 'resources'))

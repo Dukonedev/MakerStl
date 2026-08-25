@@ -9,12 +9,13 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
     QPushButton, QColorDialog, QLabel, QGroupBox,
-    QSizePolicy, QToolButton,
+    QSizePolicy, QToolButton, QComboBox, QSpinBox,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 
 from ..models.project import Project, LayerState, LayerGroup
+from ..core.quality import QualitySettings, PRESETS, PRESET_NAMES
 
 
 class PropertiesPanel(QWidget):
@@ -63,6 +64,62 @@ class PropertiesPanel(QWidget):
 
         dims_group.setLayout(dims_form)
         layout.addWidget(dims_group)
+
+        # ---- Quality group (always visible) ----
+        quality_group = QGroupBox("Quality")
+        quality_form = QFormLayout()
+
+        self._quality_preset_combo = QComboBox()
+        self._quality_preset_combo.addItems(PRESET_NAMES + ["Custom"])
+        self._quality_preset_combo.currentTextChanged.connect(self._on_quality_preset_changed)
+        quality_form.addRow("Preset:", self._quality_preset_combo)
+
+        self._quality_curve_spin = QDoubleSpinBox()
+        self._quality_curve_spin.setRange(0.05, 5.0)
+        self._quality_curve_spin.setValue(0.5)
+        self._quality_curve_spin.setSuffix(" mm")
+        self._quality_curve_spin.setDecimals(2)
+        self._quality_curve_spin.setSingleStep(0.1)
+        self._quality_curve_spin.valueChanged.connect(self._on_quality_param_changed)
+        quality_form.addRow("Curve Resolution:", self._quality_curve_spin)
+
+        self._quality_tolerance_spin = QDoubleSpinBox()
+        self._quality_tolerance_spin.setRange(0.0, 2.0)
+        self._quality_tolerance_spin.setValue(0.1)
+        self._quality_tolerance_spin.setSuffix(" mm")
+        self._quality_tolerance_spin.setDecimals(2)
+        self._quality_tolerance_spin.setSingleStep(0.05)
+        self._quality_tolerance_spin.valueChanged.connect(self._on_quality_param_changed)
+        quality_form.addRow("Tolerance:", self._quality_tolerance_spin)
+
+        self._quality_circle_spin = QSpinBox()
+        self._quality_circle_spin.setRange(8, 128)
+        self._quality_circle_spin.setValue(32)
+        self._quality_circle_spin.setSingleStep(8)
+        self._quality_circle_spin.valueChanged.connect(self._on_quality_param_changed)
+        quality_form.addRow("Circle Segments:", self._quality_circle_spin)
+
+        self._quality_dpi_spin = QSpinBox()
+        self._quality_dpi_spin.setRange(72, 1200)
+        self._quality_dpi_spin.setValue(300)
+        self._quality_dpi_spin.setSingleStep(50)
+        self._quality_dpi_spin.valueChanged.connect(self._on_quality_param_changed)
+        quality_form.addRow("Text DPI:", self._quality_dpi_spin)
+
+        self._quality_text_tol_spin = QDoubleSpinBox()
+        self._quality_text_tol_spin.setRange(0.0, 2.0)
+        self._quality_text_tol_spin.setValue(0.5)
+        self._quality_text_tol_spin.setSuffix(" mm")
+        self._quality_text_tol_spin.setDecimals(2)
+        self._quality_text_tol_spin.setSingleStep(0.1)
+        self._quality_text_tol_spin.valueChanged.connect(self._on_quality_param_changed)
+        quality_form.addRow("Text Tolerance:", self._quality_text_tol_spin)
+
+        quality_group.setLayout(quality_form)
+        layout.addWidget(quality_group)
+        self._quality_group = quality_group
+
+        self._quality_updating = False
 
         # ---- Layer properties (below) ----
         # layer name
@@ -185,7 +242,7 @@ class PropertiesPanel(QWidget):
 
     def _set_enabled(self, enabled: bool) -> None:
         for child in self.findChildren(QWidget):
-            if child != self._name_label:
+            if child != self._name_label and child is not self._quality_group:
                 child.setEnabled(enabled)
 
     def _get_target_layers(self) -> list[LayerState]:
@@ -210,7 +267,15 @@ class PropertiesPanel(QWidget):
             self._ring_group.setVisible(False)
             return
 
+        # check if any selected layer is locked
+        any_locked = any(l.locked for l in layers)
+
         self._set_enabled(True)
+        if any_locked:
+            self._set_enabled(False)
+            self._name_label.setText(layers[0].svg_layer.name + "  (locked)")
+        else:
+            self._set_enabled(True)
 
         # block signals during update
         for w in [self._height_spin, self._chamfer_spin,
@@ -322,6 +387,7 @@ class PropertiesPanel(QWidget):
         self._ext_group.setVisible(False)
         self._scale_group.setVisible(False)
         self._ring_group.setVisible(False)
+        self.load_quality()
         self.refresh_dimensions()
 
     # ------------------------------------------------------------------
@@ -376,3 +442,57 @@ class PropertiesPanel(QWidget):
         else:
             self._lock_btn.setText("\U0001F513")
             self._lock_btn.setToolTip("Lock proportions (OFF)")
+
+    # ------------------------------------------------------------------
+    # Quality
+    # ------------------------------------------------------------------
+
+    def load_quality(self) -> None:
+        """Load quality settings from project into the UI."""
+        self._quality_updating = True
+        q = self._project.quality
+        self._quality_curve_spin.setValue(q.curve_resolution)
+        self._quality_tolerance_spin.setValue(q.tolerance)
+        self._quality_circle_spin.setValue(q.circle_segments)
+        self._quality_dpi_spin.setValue(q.text_dpi)
+        self._quality_text_tol_spin.setValue(q.text_tolerance)
+
+        # select preset if it matches
+        idx = self._quality_preset_combo.findText(q.preset)
+        if idx >= 0:
+            self._quality_preset_combo.setCurrentIndex(idx)
+        else:
+            self._quality_preset_combo.setCurrentText("Custom")
+        self._quality_updating = False
+
+    def _on_quality_preset_changed(self, name: str) -> None:
+        if self._quality_updating:
+            return
+        self._quality_updating = True
+        if name in PRESETS:
+            p = PRESETS[name]
+            self._quality_curve_spin.setValue(p.curve_resolution)
+            self._quality_tolerance_spin.setValue(p.tolerance)
+            self._quality_circle_spin.setValue(p.circle_segments)
+            self._quality_dpi_spin.setValue(p.text_dpi)
+            self._quality_text_tol_spin.setValue(p.text_tolerance)
+            self._project.quality.apply_preset(name)
+        self._quality_updating = False
+        self.parameter_changed.emit()
+
+    def _on_quality_param_changed(self) -> None:
+        if self._quality_updating:
+            return
+        self._quality_updating = True
+        q = self._project.quality
+        q.curve_resolution = self._quality_curve_spin.value()
+        q.tolerance = self._quality_tolerance_spin.value()
+        q.circle_segments = self._quality_circle_spin.value()
+        q.text_dpi = self._quality_dpi_spin.value()
+        q.text_tolerance = self._quality_text_tol_spin.value()
+        q.preset = "Custom"
+        idx = self._quality_preset_combo.findText("Custom")
+        if idx >= 0:
+            self._quality_preset_combo.setCurrentIndex(idx)
+        self._quality_updating = False
+        self.parameter_changed.emit()

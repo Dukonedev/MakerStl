@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QMessageBox, QVBoxLayout, QWidget, QSplitter,
     QColorDialog, QLabel,
 )
-from PySide6.QtCore import Qt, Slot, QUrl, QMimeData
+from PySide6.QtCore import Qt, Slot, QUrl, QMimeData, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QColor, QDesktopServices, QDragEnterEvent, QDropEvent
 
 from ..core.svg_parser import SvgParser
@@ -19,6 +19,8 @@ from ..core.triangulator import triangulate_layers
 from ..core.exporters import export_stl, export_obj, export_3mf
 from ..core.undo import UndoManager
 from ..core.project_io import save_project, load_project
+from ..core.auto_save import perform_auto_save, cleanup_auto_save, AUTO_SAVE_INTERVAL_MS
+from ..core.recent_projects import add_recent, generate_thumbnail
 from ..models.project import Project, LayerState, LayerGroup
 from .viewport import Viewport3D
 from .layer_panel import LayerPanel
@@ -48,6 +50,28 @@ class MainWindow(QMainWindow):
 
         self.setAcceptDrops(True)
 
+        # auto-save timer
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.timeout.connect(self._auto_save)
+        self._auto_save_timer.start(AUTO_SAVE_INTERVAL_MS)
+
+    # ------------------------------------------------------------------
+    # Auto-save
+    # ------------------------------------------------------------------
+
+    def _auto_save(self) -> None:
+        if not self._is_dirty:
+            return
+        result = perform_auto_save(self._project, self._current_project_path)
+        if result:
+            if self._current_project_path:
+                try:
+                    screenshot = self._viewport.grabFramebuffer()
+                    generate_thumbnail(self._project, self._current_project_path, screenshot=screenshot)
+                except Exception:
+                    pass
+            self._statusbar.showMessage("Auto-saved", 2000)
+
     # ------------------------------------------------------------------
     # Drag and drop
     # ------------------------------------------------------------------
@@ -75,16 +99,40 @@ class MainWindow(QMainWindow):
                 try:
                     project = load_project(Path(path))
                     self._apply_new_project(project, Path(path))
+                    add_recent(Path(path))
+                    self._refresh_thumbnail(Path(path))
                     self._statusbar.showMessage(f"Loaded: {path}", 4000)
                 except Exception as e:
                     QMessageBox.critical(self, "Open Error", f"Failed to open project:\n{e}")
                 return
 
+    # Palette for assigning visible colors when SVG has no fill info
+    _DEFAULT_PALETTE: list[tuple[int, int, int]] = [
+        (231, 76, 60),    # red
+        (46, 204, 113),   # green
+        (52, 152, 219),   # blue
+        (241, 196, 15),   # yellow
+        (155, 89, 182),   # purple
+        (230, 126, 34),   # orange
+        (26, 188, 156),   # teal
+        (236, 64, 122),   # pink
+        (0, 200, 83),     # emerald
+        (100, 100, 220),  # cornflower
+        (255, 140, 0),    # dark orange
+        (0, 191, 255),    # sky blue
+        (186, 85, 211),   # medium orchid
+        (60, 179, 113),   # medium sea green
+        (219, 112, 147),  # pale violet red
+        (127, 255, 0),    # chartreuse
+    ]
+
     def _import_svg_path(self, path: Path) -> None:
         """Import SVG as a new project (replaces current)."""
-        self._push_undo()
+        self._push_undo("Import SVG")
         try:
-            parser = SvgParser(str(path))
+            parser = SvgParser(str(path),
+                               max_step=self._project.quality.curve_resolution,
+                               circle_segments=self._project.quality.circle_segments)
             svg_layers = parser.parse()
             doc_w, doc_h = parser.document_size
             self._project._last_import_dir = path.parent
@@ -116,7 +164,18 @@ class MainWindow(QMainWindow):
 
             layer_data = [(sl.id, sl.vertices) for sl in svg_layers]
             hole_data = {sl.id: sl.hole_verts for sl in svg_layers if sl.hole_verts}
-            meshes = triangulate_layers(layer_data, hole_data=hole_data)
+            meshes = triangulate_layers(layer_data, tolerance=self._project.quality.tolerance,
+                                        hole_data=hole_data)
+
+            # If ALL layers are (0,0,0) — SVG had no fill/stroke info —
+            # assign a visible palette so the user can see the shapes.
+            non_bg = [sl for sl in svg_layers
+                      if not (sl.color == (255, 255, 255)
+                              or (sl.color == (0, 0, 0) and sl.fill_opacity < 1.0))]
+            if non_bg and all(sl.color == (0, 0, 0) for sl in non_bg):
+                for i, sl in enumerate(non_bg):
+                    pal = self._DEFAULT_PALETTE[i % len(self._DEFAULT_PALETTE)]
+                    sl.color = pal
 
             color_groups: dict[tuple[int, int, int], LayerGroup] = {}
             for sl in svg_layers:
@@ -157,11 +216,22 @@ class MainWindow(QMainWindow):
             parts = self._project.recompute_extrusions()
             self._layer_panel.refresh()
             self._properties_panel.refresh_dimensions()
+            self._viewport.refresh()
             self._viewport.fit_to_scene()
             self._update_title()
             self._mark_dirty()
             total_verts = sum(p.vertex_count for p in parts)
             total_faces = sum(p.face_count for p in parts)
+            from ..core.debug_log import log
+            log(f"Import SVG done: {len(svg_layers)} layers, {total_verts} verts, {total_faces} faces")
+            for i, layer in enumerate(self._project.layers[:5]):
+                ep = layer.extruded_part
+                vis = layer.effective_visible
+                has_mesh = layer.triangulated_mesh is not None
+                has_part = ep is not None
+                nv = len(ep.vertices) if ep else 0
+                nf = len(ep.faces) if ep else 0
+                log(f"  layer[{i}] id={layer.svg_layer.id} vis={vis} mesh={has_mesh} part={has_part} v={nv} f={nf} color={layer.color}")
             self._statusbar.showMessage(
                 f"Loaded {len(svg_layers)} layers | "
                 f"{total_verts} vertices, {total_faces} faces | "
@@ -173,9 +243,11 @@ class MainWindow(QMainWindow):
 
     def _import_svg_add_path(self, path: Path) -> None:
         """Import SVG and add to existing project."""
-        self._push_undo()
+        self._push_undo("Add SVG")
         try:
-            parser = SvgParser(str(path))
+            parser = SvgParser(str(path),
+                               max_step=self._project.quality.curve_resolution,
+                               circle_segments=self._project.quality.circle_segments)
             svg_layers = parser.parse()
             if not svg_layers:
                 return
@@ -200,7 +272,16 @@ class MainWindow(QMainWindow):
 
             layer_data = [(sl.id, sl.vertices) for sl in svg_layers]
             hole_data = {sl.id: sl.hole_verts for sl in svg_layers if sl.hole_verts}
-            meshes = triangulate_layers(layer_data, hole_data=hole_data)
+            meshes = triangulate_layers(layer_data, tolerance=self._project.quality.tolerance,
+                                        hole_data=hole_data)
+
+            non_bg = [sl for sl in svg_layers
+                      if not (sl.color == (255, 255, 255)
+                              or (sl.color == (0, 0, 0) and sl.fill_opacity < 1.0))]
+            if non_bg and all(sl.color == (0, 0, 0) for sl in non_bg):
+                for i, sl in enumerate(non_bg):
+                    pal = self._DEFAULT_PALETTE[i % len(self._DEFAULT_PALETTE)]
+                    sl.color = pal
 
             svg_name = path.stem
             svg_group = self._project.create_group(svg_name)
@@ -400,6 +481,12 @@ class MainWindow(QMainWindow):
         self._view_shapes.setShortcut(QKeySequence("Ctrl+2"))
         view_menu.addAction(self._view_shapes)
 
+        self._view_history = QAction("&History Panel", self)
+        self._view_history.setCheckable(True)
+        self._view_history.setChecked(True)
+        self._view_history.setShortcut(QKeySequence("Ctrl+3"))
+        view_menu.addAction(self._view_history)
+
         view_menu.addSeparator()
 
         self._view_gizmo_translate = QAction("Gizmo: &Move", self)
@@ -461,6 +548,7 @@ class MainWindow(QMainWindow):
         self._shapes_dock = None
         self._view_properties.triggered.connect(self._toggle_properties_dock)
         self._view_shapes.triggered.connect(self._toggle_shapes_dock)
+        self._view_history.triggered.connect(self._toggle_history_dock)
 
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar")
@@ -544,7 +632,7 @@ class MainWindow(QMainWindow):
         # 3D Viewport (central widget)
         self._viewport = Viewport3D(self._project)
         self._viewport.layer_clicked.connect(self._on_viewport_click)
-        self._viewport.gizmo_drag_started.connect(self._push_undo)
+        self._viewport.gizmo_drag_started.connect(lambda: self._push_undo("Transform"))
         self._viewport.transform_changed.connect(self._on_gizmo_transform)
         self.setCentralWidget(self._viewport)
 
@@ -561,7 +649,7 @@ class MainWindow(QMainWindow):
         self._layer_panel.request_refresh.connect(self._on_refresh_viewport)
         self._layer_panel.merge_requested.connect(self._on_merge_layers)
         self._layer_panel.subtract_requested.connect(self._on_subtract_layers)
-        self._layer_panel.undo_needed.connect(self._push_undo)
+        self._layer_panel.undo_needed.connect(lambda: self._push_undo("Layer Edit"))
 
         # Combined right panel: properties on top, layers below
         right_widget = QWidget()
@@ -591,10 +679,49 @@ class MainWindow(QMainWindow):
         self._shapes_dock.setMaximumWidth(160)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._shapes_dock)
 
+        # Bottom dock: History panel
+        from .history_panel import HistoryPanel
+        self._history_panel = HistoryPanel()
+        self._history_panel.undo_requested.connect(self._undo)
+        self._history_panel.redo_requested.connect(self._redo)
+        self._history_dock = QDockWidget("History", self)
+        self._history_dock.setWidget(self._history_panel)
+        self._history_dock.setMinimumHeight(80)
+        self._history_dock.setMaximumHeight(160)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._history_dock)
+
     def _setup_statusbar(self) -> None:
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
         self._statusbar.showMessage("Ready — Import an SVG file to begin")
+        # permanent info widget
+        self._info_label = QLabel()
+        self._info_label.setStyleSheet("color: #999; font-size: 11px; padding: 0 8px;")
+        self._statusbar.addPermanentWidget(self._info_label)
+        self._update_info_bar()
+
+    def _update_info_bar(self) -> None:
+        """Refresh the info bar with model statistics."""
+        import numpy as np
+        all_verts = []
+        total_faces = 0
+        for layer in self._project.layers:
+            if layer.effective_visible and layer.extruded_part:
+                part = layer.extruded_part
+                if len(part.vertices) > 0:
+                    all_verts.append(part.vertices)
+                    total_faces += len(part.faces)
+        if all_verts:
+            combined = np.vstack(all_verts)
+            extent = combined.max(axis=0) - combined.min(axis=0)
+            dims = f"{extent[0]:.1f} x {extent[1]:.1f} x {extent[2]:.1f}"
+            area = self._project.base_size_x * self._project.base_size_y
+            self._info_label.setText(
+                f"  {dims}  |  {total_faces:,} triangles  |  Base: {area:.0f} mm²  |  "
+                f"{len(self._project.layers)} layer(s)"
+            )
+        else:
+            self._info_label.setText("")
 
     def _toggle_properties_dock(self, checked: bool) -> None:
         if self._properties_dock:
@@ -604,18 +731,19 @@ class MainWindow(QMainWindow):
         if self._shapes_dock:
             self._shapes_dock.setVisible(checked)
 
+    def _toggle_history_dock(self, checked: bool) -> None:
+        if self._history_dock:
+            self._history_dock.setVisible(checked)
+
     # --- Undo / Redo ---
 
-    def _push_undo(self) -> None:
+    def _push_undo(self, action: str = "Edit") -> None:
         """Save current state to undo stack (lazy: one per batch)."""
         if self._undo_pending:
             return
-        self._undo_mgr.push(self._undo_mgr.snapshot(self._project))
+        self._undo_mgr.push(self._undo_mgr.snapshot(self._project), action=action)
         self._undo_pending = True
-        self._undo_action.setEnabled(self._undo_mgr.can_undo)
-        self._redo_action.setEnabled(self._undo_mgr.can_redo)
-        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
-        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
+        self._update_undo_ui()
         self._mark_dirty()
 
     def _flush_undo(self) -> None:
@@ -623,32 +751,24 @@ class MainWindow(QMainWindow):
         self._undo_pending = False
 
     def _undo(self) -> None:
-        # save current state to redo before restoring
         current = self._undo_mgr.snapshot(self._project)
-        snap = self._undo_mgr.undo()
-        if snap is None:
+        result = self._undo_mgr.undo()
+        if result is None:
             return
-        # push current to redo stack
-        self._undo_mgr._redo_stack.append(current)
+        name, snap = result
+        self._undo_mgr._redo_stack.append((name, current))
         self._undo_mgr.restore(self._project, snap)
         self._refresh_after_undo()
-        self._undo_action.setEnabled(self._undo_mgr.can_undo)
-        self._redo_action.setEnabled(self._undo_mgr.can_redo)
-        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
-        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
 
     def _redo(self) -> None:
         current = self._undo_mgr.snapshot(self._project)
-        snap = self._undo_mgr.redo()
-        if snap is None:
+        result = self._undo_mgr.redo()
+        if result is None:
             return
-        self._undo_mgr._undo_stack.append(current)
+        name, snap = result
+        self._undo_mgr._undo_stack.append((name, current))
         self._undo_mgr.restore(self._project, snap)
         self._refresh_after_undo()
-        self._undo_action.setEnabled(self._undo_mgr.can_undo)
-        self._redo_action.setEnabled(self._undo_mgr.can_redo)
-        self._menu_undo.setEnabled(self._undo_mgr.can_undo)
-        self._menu_redo.setEnabled(self._undo_mgr.can_redo)
 
     def _refresh_after_undo(self) -> None:
         """Refresh all panels after an undo/redo operation."""
@@ -658,10 +778,18 @@ class MainWindow(QMainWindow):
         self._viewport.refresh()
         self._properties_panel.refresh_dimensions()
         self._viewport.fit_to_scene()
+        self._update_undo_ui()
+        self._update_info_bar()
+
+    def _update_undo_ui(self) -> None:
+        """Update undo/redo buttons and history panel."""
         self._undo_action.setEnabled(self._undo_mgr.can_undo)
         self._redo_action.setEnabled(self._undo_mgr.can_redo)
         self._menu_undo.setEnabled(self._undo_mgr.can_undo)
         self._menu_redo.setEnabled(self._undo_mgr.can_redo)
+        self._history_panel.update_history(
+            self._undo_mgr.undo_names, self._undo_mgr.redo_names
+        )
 
     def _set_gizmo_mode(self, mode: int) -> None:
         """Switch gizmo mode and update toolbar button states."""
@@ -691,6 +819,7 @@ class MainWindow(QMainWindow):
             f"<hr style='border-color:#555'>"
             f"<p><a href='https://github.com/Dukonedev/MakerStl'>GitHub Repository</a></p>"
             f"<p><a href='https://github.com/Dukonedev/MakerStl/releases'>Releases</a></p>"
+            f"<p><a href='https://makerworld.com/it/@VirtuPrinto/upload'>Support VirtuPrinto on Makerworld</a></p>"
             f"<p style='color:#888; font-size:11px; margin-top:12px'>"
             f"Copyright &copy; 2026 DukoneDev</p>"
         )
@@ -728,14 +857,11 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_new_project(self) -> None:
         """Create a new empty project."""
-        self._push_undo()
+        self._push_undo("New Project")
         self._project = Project()
         self._current_project_path = None
         self._undo_mgr.clear()
-        self._undo_action.setEnabled(False)
-        self._redo_action.setEnabled(False)
-        self._menu_undo.setEnabled(False)
-        self._menu_redo.setEnabled(False)
+        self._update_undo_ui()
         self._update_title()
         self._viewport.set_project(self._project)
         self._layer_panel.set_project(self._project)
@@ -760,10 +886,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        self._push_undo()
+        self._push_undo("Import SVG")
 
         try:
-            parser = SvgParser(path)
+            parser = SvgParser(path,
+                               max_step=self._project.quality.curve_resolution,
+                               circle_segments=self._project.quality.circle_segments)
             svg_layers = parser.parse()
             doc_w, doc_h = parser.document_size
 
@@ -806,7 +934,17 @@ class MainWindow(QMainWindow):
             # triangulate all layers
             layer_data = [(sl.id, sl.vertices) for sl in svg_layers]
             hole_data = {sl.id: sl.hole_verts for sl in svg_layers if sl.hole_verts}
-            meshes = triangulate_layers(layer_data, hole_data=hole_data)
+            meshes = triangulate_layers(layer_data, tolerance=self._project.quality.tolerance,
+                                        hole_data=hole_data)
+
+            # If ALL layers are (0,0,0), assign visible palette colors
+            non_bg = [sl for sl in svg_layers
+                      if not (sl.color == (255, 255, 255)
+                              or (sl.color == (0, 0, 0) and sl.fill_opacity < 1.0))]
+            if non_bg and all(sl.color == (0, 0, 0) for sl in non_bg):
+                for i, sl in enumerate(non_bg):
+                    pal = self._DEFAULT_PALETTE[i % len(self._DEFAULT_PALETTE)]
+                    sl.color = pal
 
             # create layer states and group by color
             color_groups: dict[tuple[int, int, int], LayerGroup] = {}
@@ -900,10 +1038,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        self._push_undo()
+        self._push_undo("Add SVG")
 
         try:
-            parser = SvgParser(path)
+            parser = SvgParser(path,
+                               max_step=self._project.quality.curve_resolution,
+                               circle_segments=self._project.quality.circle_segments)
             svg_layers = parser.parse()
             doc_w, doc_h = parser.document_size
 
@@ -938,7 +1078,17 @@ class MainWindow(QMainWindow):
             # triangulate
             layer_data = [(sl.id, sl.vertices) for sl in svg_layers]
             hole_data = {sl.id: sl.hole_verts for sl in svg_layers if sl.hole_verts}
-            meshes = triangulate_layers(layer_data, hole_data=hole_data)
+            meshes = triangulate_layers(layer_data, tolerance=self._project.quality.tolerance,
+                                        hole_data=hole_data)
+
+            # If ALL layers are (0,0,0), assign visible palette colors
+            non_bg = [sl for sl in svg_layers
+                      if not (sl.color == (255, 255, 255)
+                              or (sl.color == (0, 0, 0) and sl.fill_opacity < 1.0))]
+            if non_bg and all(sl.color == (0, 0, 0) for sl in non_bg):
+                for i, sl in enumerate(non_bg):
+                    pal = self._DEFAULT_PALETTE[i % len(self._DEFAULT_PALETTE)]
+                    sl.color = pal
 
             # create a new group for this SVG
             svg_name = Path(path).stem
@@ -1092,10 +1242,26 @@ class MainWindow(QMainWindow):
             return
         self._save_to(Path(path))
 
+    def _refresh_thumbnail(self, path: Path) -> None:
+        """Regenerate the viewport thumbnail for *path* after a short delay."""
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(300, lambda p=path: self._do_refresh_thumbnail(p))
+
+    def _do_refresh_thumbnail(self, path: Path) -> None:
+        try:
+            screenshot = self._viewport.grabFramebuffer()
+            generate_thumbnail(self._project, path, screenshot=screenshot)
+        except Exception:
+            pass
+
     def _save_to(self, path: Path) -> None:
         try:
             save_project(self._project, path)
             self._current_project_path = path
+            cleanup_auto_save(path)
+            add_recent(path)
+            screenshot = self._viewport.grabFramebuffer()
+            generate_thumbnail(self._project, path, screenshot=screenshot)
             self._mark_clean()
             self._statusbar.showMessage(f"Saved: {path}", 4000)
         except Exception as e:
@@ -1112,6 +1278,8 @@ class MainWindow(QMainWindow):
         try:
             project = load_project(Path(path))
             self._apply_new_project(project, Path(path))
+            add_recent(Path(path))
+            self._refresh_thumbnail(Path(path))
             self._statusbar.showMessage(f"Loaded: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Open Error", f"Failed to open project:\n{e}")
@@ -1121,6 +1289,8 @@ class MainWindow(QMainWindow):
         try:
             project = load_project(path)
             self._apply_new_project(project, path)
+            add_recent(path)
+            self._refresh_thumbnail(path)
             self._statusbar.showMessage(f"Loaded: {path}", 4000)
         except Exception as e:
             QMessageBox.critical(self, "Open Error", f"Failed to open project:\n{e}")
@@ -1130,10 +1300,7 @@ class MainWindow(QMainWindow):
         self._project = project
         self._current_project_path = path
         self._undo_mgr.clear()
-        self._undo_action.setEnabled(False)
-        self._redo_action.setEnabled(False)
-        self._menu_undo.setEnabled(False)
-        self._menu_redo.setEnabled(False)
+        self._update_undo_ui()
         self._mark_clean()
         # re-point all panels to the new project
         self._viewport.set_project(project)
@@ -1156,7 +1323,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, bool)
     def _on_layer_visibility(self, layer_id: str, visible: bool) -> None:
-        self._push_undo()
+        self._push_undo("Visibility")
         layer = self._project.get_layer_by_id(layer_id)
         if layer:
             layer.visible = visible
@@ -1166,7 +1333,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object, bool)
     def _on_group_visibility(self, group: LayerGroup, visible: bool) -> None:
-        self._push_undo()
+        self._push_undo("Visibility")
         group.visible = visible
         self._project.recompute_extrusions()
         self._viewport.refresh()
@@ -1174,7 +1341,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_parameter_changed(self) -> None:
-        self._push_undo()
+        self._push_undo("Parameter Change")
         self._project.recompute_extrusions()
         self._viewport.refresh()
         self._flush_undo()
@@ -1196,6 +1363,7 @@ class MainWindow(QMainWindow):
         """Gizmo drag completed — refresh panels and push undo."""
         self._properties_panel.refresh_dimensions()
         self._layer_panel.refresh()
+        self._update_info_bar()
         self._statusbar.showMessage("Transform applied", 3000)
 
     @Slot(list)
@@ -1208,7 +1376,7 @@ class MainWindow(QMainWindow):
         color = QColorDialog.getColor(initial, self, "Merge — Choose Color")
         if not color.isValid():
             return
-        self._push_undo()
+        self._push_undo("Merge Layers")
         rgb = (color.red(), color.green(), color.blue())
         self._project.merge_layers(layer_ids, color=rgb)
         self._project.recompute_extrusions()
@@ -1218,7 +1386,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, list)
     def _on_subtract_layers(self, base_id: str, cutter_ids: list[str]) -> None:
-        self._push_undo()
+        self._push_undo("Subtract Layers")
         result = self._project.subtract_layers(base_id, cutter_ids)
         if result:
             self._project.recompute_extrusions()
@@ -1249,15 +1417,16 @@ class MainWindow(QMainWindow):
         elif shape_key == "cross":
             kwargs = {"arm": w / 4, "length": w}
         elif shape_key == "ellipse":
-            kwargs = {"rx": w / 2, "ry": h / 2}
+            kwargs = {"rx": w / 2, "ry": h / 2, "segments": self._project.quality.circle_segments}
         elif shape_key == "ring":
-            outer_verts, inner_hole = func(outer_diameter=w, thickness=h)
+            outer_verts, inner_hole = func(outer_diameter=w, thickness=h,
+                                           segments=self._project.quality.circle_segments)
             verts = outer_verts
             hole_verts = [inner_hole]
             ring_outer_d = w
             ring_thickness = h
         else:
-            kwargs = {"radius": w / 2}
+            kwargs = {"radius": w / 2, "segments": self._project.quality.circle_segments}
 
         if shape_key != "ring":
             verts = func(**kwargs)
@@ -1266,10 +1435,11 @@ class MainWindow(QMainWindow):
         color = QColorDialog.getColor(QColor(128, 128, 128), self, "Shape Color")
         if not color.isValid():
             return
-        self._push_undo()
+        self._push_undo("Add Shape")
         rgb = (color.red(), color.green(), color.blue())
 
-        mesh = triangulate_layer(verts, hole_verts=hole_verts if hole_verts else None)
+        mesh = triangulate_layer(verts, tolerance=self._project.quality.tolerance,
+                                 hole_verts=hole_verts if hole_verts else None)
         svg_layer = SvgLayer(
             id=f"shape_{shape_key}_{id(verts)}",
             name=shape_key.capitalize(),
@@ -1319,7 +1489,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QColor
 
         try:
-            shapes = text_to_vertices(text, font_name=font_name, font_size=font_size)
+            shapes = text_to_vertices(text, font_name=font_name, font_size=font_size,
+                                       dpi=self._project.quality.text_dpi,
+                                       text_tolerance=self._project.quality.text_tolerance)
         except Exception as e:
             QMessageBox.critical(self, "Text Error", f"Failed to generate text:\n{e}")
             return
@@ -1332,14 +1504,15 @@ class MainWindow(QMainWindow):
         if not color.isValid():
             return
 
-        self._push_undo()
+        self._push_undo("Add Text")
         rgb = (color.red(), color.green(), color.blue())
 
         # create a group for the text
         text_group = self._project.create_group(f"Text: {text[:20]}")
 
         for i, (outer, holes) in enumerate(shapes):
-            mesh = triangulate_layer(outer, hole_verts=holes if holes else None)
+            mesh = triangulate_layer(outer, tolerance=self._project.quality.tolerance,
+                                     hole_verts=holes if holes else None)
             svg_layer = SvgLayer(
                 id=f"text_{text[:10]}_{i}_{id(outer)}",
                 name=f"{text[:15]}_{i}" if len(shapes) > 1 else text[:20],

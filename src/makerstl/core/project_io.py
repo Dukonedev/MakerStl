@@ -11,6 +11,7 @@ from ..models.project import Project, LayerState, LayerGroup
 from ..core.svg_parser import SvgLayer
 from ..core.triangulator import TriangulatedMesh
 from ..core.extruder import ExtrusionParams
+from ..core.quality import QualitySettings
 
 
 def _serialize_svg_layer(sl: SvgLayer) -> dict:
@@ -82,7 +83,7 @@ def _serialize_node(node: LayerState | LayerGroup) -> dict:
 def save_project(project: Project, path: str | Path) -> None:
     """Save the full project state to a .makerstl JSON file."""
     data = {
-        "version": 1,
+        "version": 2,
         "name": project.name,
         "svg_path": str(project.svg_path) if project.svg_path else None,
         "global_scale": project.global_scale,
@@ -90,6 +91,7 @@ def save_project(project: Project, path: str | Path) -> None:
         "base_height": project.base_height,
         "base_size_x": project.base_size_x,
         "base_size_y": project.base_size_y,
+        "quality": project.quality.to_dict(),
         "root": _serialize_group(project.root),
     }
 
@@ -191,6 +193,11 @@ def load_project(path: str | Path) -> Project:
     project.base_height = data.get("base_height", 2.0)
     project.base_size_x = data.get("base_size_x", 100.0)
     project.base_size_y = data.get("base_size_y", 100.0)
+
+    # quality settings (backward compatible with version 1 files)
+    quality_d = data.get("quality")
+    if quality_d:
+        project.quality = QualitySettings.from_dict(quality_d)
 
     root_d = data.get("root", {})
     project.root = _deserialize_group(root_d)

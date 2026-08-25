@@ -55,12 +55,14 @@ SVG → `SvgParser` → `triangulate_layers` → `extrude_layer` → `ExtrudedPa
 | `core/text.py` | Pillow font rendering → bitmap → contour tracing → polygons |
 | `core/undo.py` | Snapshot-based UndoManager (deepcopy, max 50) |
 | `core/project_io.py` | Save/load `.makerstl` JSON (full tree + mesh + params) |
+| `core/auto_save.py` | Periodic auto-save (5min) + crash recovery + thumbnail on auto-save |
+| `core/recent_projects.py` | Recent projects metadata + viewport screenshot thumbnails |
 | `models/project.py` | Project/LayerGroup/LayerState, merge, subtract, duplicate, ring regeneration |
-| `ui/main_window.py` | Orchestrator: wires all panels, import/export, gizmo, undo |
+| `ui/main_window.py` | Orchestrator: wires all panels, import/export, gizmo, undo, drag-drop, auto-save |
 | `ui/viewport.py` | QOpenGLWidget, batch vertex arrays, color-picking, transform gizmo |
-| `ui/layer_panel.py` | Photoshop-style tree, drag-drop, multi-select, _EyeColumnDelegate |
+| `ui/layer_panel.py` | Photoshop-style tree, drag-drop, multi-select, _EyeColumnDelegate, _LockColumnDelegate |
 | `ui/properties.py` | Context-sensitive panels (base/ring/normal layers), ring parametric editing |
-| `ui/welcome.py` | Welcome screen with recent .makerstl files |
+| `ui/welcome.py` | Welcome screen with recent .makerstl thumbnails, drag-drop support |
 
 ## Conventions
 - `from __future__ import annotations` everywhere

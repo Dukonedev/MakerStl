@@ -1,12 +1,14 @@
-"""Layer panel: Photoshop-style tree with groups, visibility, and indentation.
+"""Layer panel: Photoshop-style tree with groups, visibility, lock, and indentation.
 
 Features:
 - Dedicated eye column for visibility toggle
+- Dedicated lock column for lock toggle
 - Expand/collapse chevrons for groups
 - Color swatches
 - Right-click context menu
 - Double-click to rename
 - Drag-and-drop with proper model sync
+- Locked layers: no gizmo, no drag, no delete
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QLabel, QMenu, QInputDialog, QToolBar,
     QAbstractItemView, QStyledItemDelegate, QStyle, QToolButton,
+    QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QRect
 from PySide6.QtGui import (
@@ -165,6 +168,84 @@ class _EyeColumnDelegate(QStyledItemDelegate):
 
 
 # ------------------------------------------------------------------
+# Lock column delegate — paints padlock icon, toggles lock on click
+# ------------------------------------------------------------------
+
+class _LockColumnDelegate(QStyledItemDelegate):
+    """Paints a padlock icon in column 1, toggles lock on click."""
+
+    def __init__(self, panel: "LayerPanel", parent=None):
+        super().__init__(parent)
+        self._panel = panel
+
+    def paint(self, painter, option, index):
+        painter.save()
+
+        # draw background manually (selection highlight, hover, etc.)
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, QColor(38, 128, 235))
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            painter.fillRect(option.rect, QColor(58, 58, 58))
+
+        tree = option.widget
+        if not tree or not hasattr(tree, "itemFromIndex"):
+            painter.restore()
+            return
+        item = tree.itemFromIndex(index)
+        if not item or not hasattr(item, "node"):
+            painter.restore()
+            return
+
+        node = item.node
+        if isinstance(node, LayerGroup):
+            locked = node.locked
+        elif isinstance(node, LayerState):
+            locked = node.locked
+        else:
+            painter.restore()
+            return
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = option.rect
+        cx = rect.left() + rect.width() // 2
+        cy = rect.center().y()
+
+        if locked:
+            painter.setPen(QPen(QColor(220, 180, 50), 2))
+            painter.setBrush(QColor(220, 180, 50))
+            painter.drawArc(cx - 4, cy - 9, 8, 8, 0, 180 * 16)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(220, 180, 50))
+            painter.drawRoundedRect(cx - 5, cy - 2, 10, 8, 1, 1)
+            painter.setBrush(QColor(60, 50, 20))
+            painter.drawEllipse(cx - 1, cy + 1, 3, 3)
+        else:
+            painter.setPen(QPen(QColor(70, 70, 70), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(cx - 4, cy - 9, 8, 8, 0, 180 * 16)
+            painter.drawRect(cx - 5, cy - 2, 10, 8)
+
+        painter.restore()
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() == event.Type.MouseButtonRelease:
+            tree = option.widget
+            if tree and hasattr(tree, "itemFromIndex"):
+                item = tree.itemFromIndex(index)
+                if item and hasattr(item, "node"):
+                    node = item.node
+                    if isinstance(node, LayerGroup):
+                        node.locked = not node.locked
+                    elif isinstance(node, LayerState):
+                        node.locked = not node.locked
+                    self._panel.refresh()
+                    return True
+        if event.type() == event.Type.MouseButtonPress:
+            return True
+        return super().editorEvent(event, model, option, index)
+
+
+# ------------------------------------------------------------------
 # Custom tree item
 # ------------------------------------------------------------------
 
@@ -209,6 +290,14 @@ class _LayerTree(QTreeWidget):
             return
 
         dropped_node = dropped_item.node
+
+        # refuse to move locked items
+        if isinstance(dropped_node, LayerGroup) and dropped_node.locked:
+            event.ignore()
+            return
+        if isinstance(dropped_node, LayerState) and dropped_node.locked:
+            event.ignore()
+            return
         target_item = self.itemAt(event.position().toPoint())
         if target_item is None or not hasattr(target_item, "node"):
             # dropped on empty space -> reparent to root
@@ -263,10 +352,10 @@ class LayerPanel(QWidget):
         layout.setSpacing(0)
 
         # --- tree ---
-        # 3 columns: Eye | Name | Color
+        # 4 columns: Eye(0) | Lock(1) | Name(2) | Color(3)
         self._tree = _LayerTree(self._project)
-        self._tree.setHeaderLabels(["", "Name", ""])
-        self._tree.setColumnCount(3)
+        self._tree.setHeaderLabels(["", "", "Name", ""])
+        self._tree.setColumnCount(4)
         self._tree.setRootIsDecorated(True)
         self._tree.setIndentation(20)
         self._tree.setIconSize(QSize(20, 20))
@@ -275,19 +364,22 @@ class LayerPanel(QWidget):
         self._tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._tree.setDefaultDropAction(Qt.DropAction.MoveAction)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._tree.setColumnWidth(0, 120)  # eye column — generous for nested indentation
-        self._tree.setColumnWidth(1, 160)  # name column
-        self._tree.setColumnWidth(2, 24)   # color column
+        self._tree.setColumnWidth(0, 40)   # eye column
+        self._tree.setColumnWidth(1, 36)   # lock column
+        self._tree.setColumnWidth(2, 160)  # name column
+        self._tree.setColumnWidth(3, 24)   # color column
         self._tree.header().setStretchLastSection(False)
         self._tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self._tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self._tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._tree.itemSelectionChanged.connect(self._on_selection_changed)
         self._tree.customContextMenuRequested.connect(self._on_context_menu)
         self._tree.model_changed.connect(self._on_drop_sync)
         self._tree.setItemDelegateForColumn(0, _EyeColumnDelegate(self, self._tree))
+        self._tree.setItemDelegateForColumn(1, _LockColumnDelegate(self, self._tree))
         layout.addWidget(self._tree)
 
         # --- bottom toolbar (Photoshop-style) ---
@@ -319,6 +411,7 @@ class LayerPanel(QWidget):
         bottom_layout.addWidget(_make_btn("\u2702", "Delete", self._on_delete))
         bottom_layout.addWidget(_make_btn("\u2398", "Duplicate", self._on_duplicate))
         bottom_layout.addWidget(_make_btn("\u2299", "Subtract", self._on_subtract))
+        bottom_layout.addWidget(_make_btn("\U0001F512", "Lock", self._on_toggle_lock_selected))
         bottom_layout.addStretch()
         bottom_layout.addWidget(_make_btn("\u2b1a", "Merge", self._on_merge))
         layout.addWidget(bottom_bar)
@@ -367,29 +460,31 @@ class LayerPanel(QWidget):
     def _add_node(self, node, parent_item):
         item = LayerTreeItem(node)
 
+        is_locked = node.locked if isinstance(node, LayerGroup) else node.locked
+
         if isinstance(node, LayerGroup):
-            # column 1: name
-            item.setText(1, node.name)
-            # column 2: color swatch
+            # column 2: name
+            item.setText(2, node.name)
+            # column 3: color swatch
             r, g, b = node.color
-            item.setBackground(2, QColor(r, g, b))
-            if not node.visible:
-                for col in range(1, 3):
+            item.setBackground(3, QColor(r, g, b))
+            if not node.visible or is_locked:
+                for col in (2, 3):
                     item.setForeground(col, QColor(120, 120, 120))
             else:
-                for col in range(1, 3):
+                for col in (2, 3):
                     item.setForeground(col, QColor(230, 230, 230))
         else:
-            # column 1: name
-            item.setText(1, node.svg_layer.name)
-            # column 2: color swatch
+            # column 2: name
+            item.setText(2, node.svg_layer.name)
+            # column 3: color swatch
             r, g, b = node.color
-            item.setBackground(2, QColor(r, g, b))
-            if not node.effective_visible:
-                for col in range(1, 3):
+            item.setBackground(3, QColor(r, g, b))
+            if not node.effective_visible or is_locked:
+                for col in (2, 3):
                     item.setForeground(col, QColor(120, 120, 120))
             else:
-                for col in range(1, 3):
+                for col in (2, 3):
                     item.setForeground(col, QColor(230, 230, 230))
 
         if parent_item:
@@ -434,16 +529,16 @@ class LayerPanel(QWidget):
         self.layers_selected.emit(ids)
 
     def _on_item_clicked(self, item: LayerTreeItem, column: int) -> None:
-        if column == 0:
-            return  # handled by _EyeColumnDelegate
+        if column in (0, 1):
+            return  # handled by delegates
         self._emit_selection()
 
     def _on_selection_changed(self) -> None:
         self._emit_selection()
 
     def _on_item_double_clicked(self, item: LayerTreeItem, column: int) -> None:
-        if column == 0:
-            return  # don't rename on eye click
+        if column in (0, 1):
+            return  # don't rename on eye/lock click
         node = item.node
         name = node.name if isinstance(node, LayerGroup) else node.svg_layer.name
         new_name, ok = QInputDialog.getText(self, "Rename", "Name:", text=name)
@@ -483,9 +578,17 @@ class LayerPanel(QWidget):
 
         menu.addSeparator()
 
+        # Lock / Unlock
+        if item and hasattr(item, "node"):
+            node = item.node
+            is_locked = node.locked
+            act_lock = QAction("Unlock" if is_locked else "Lock", self)
+            act_lock.triggered.connect(lambda: self._on_toggle_lock(node))
+            menu.addAction(act_lock)
+
         act_rename = QAction("Rename", self)
         act_rename.triggered.connect(
-            lambda: self._on_item_double_clicked(item, 1) if item else None
+            lambda: self._on_item_double_clicked(item, 2) if item else None
         )
         menu.addAction(act_rename)
 
@@ -510,6 +613,26 @@ class LayerPanel(QWidget):
     # Actions
     # ------------------------------------------------------------------
 
+    def _is_any_locked(self, items=None) -> bool:
+        """Return True if any selected item is locked (or has a locked ancestor)."""
+        if items is None:
+            items = self._tree.selectedItems()
+        for item in items:
+            if not hasattr(item, "node"):
+                continue
+            node = item.node
+            if isinstance(node, LayerGroup) and node.locked:
+                return True
+            if isinstance(node, LayerState):
+                n = node
+                while n is not None:
+                    if isinstance(n, LayerGroup) and n.locked:
+                        return True
+                    if isinstance(n, LayerState) and n.locked:
+                        return True
+                    n = getattr(n, "_parent", None)
+        return False
+
     def _on_new_group(self) -> None:
         self.undo_needed.emit()
         self._project.create_group("Group")
@@ -523,6 +646,23 @@ class LayerPanel(QWidget):
         self._project.group_selected([item.node.svg_layer.id])
         self.refresh()
 
+    def _on_toggle_lock(self, node) -> None:
+        self.undo_needed.emit()
+        node.locked = not node.locked
+        self.refresh()
+
+    def _on_toggle_lock_selected(self) -> None:
+        """Toggle lock on all selected items."""
+        items = self._tree.selectedItems()
+        if not items:
+            return
+        self.undo_needed.emit()
+        for item in items:
+            if hasattr(item, "node"):
+                node = item.node
+                node.locked = not node.locked
+        self.refresh()
+
     def _on_ungroup(self) -> None:
         item = self._tree.currentItem()
         if not item or not isinstance(item.node, LayerGroup):
@@ -534,6 +674,8 @@ class LayerPanel(QWidget):
     def _on_delete(self) -> None:
         item = self._tree.currentItem()
         if not item:
+            return
+        if self._is_any_locked():
             return
         self.undo_needed.emit()
         if isinstance(item.node, LayerState):
@@ -549,6 +691,8 @@ class LayerPanel(QWidget):
         item = self._tree.currentItem()
         if not item:
             return
+        if self._is_any_locked():
+            return
         if isinstance(item.node, LayerState):
             self.undo_needed.emit()
             new_layer = self._project.duplicate_layer(item.node.svg_layer.id)
@@ -561,6 +705,8 @@ class LayerPanel(QWidget):
         """Subtract selected layers from the first selected (base)."""
         items = self._tree.selectedItems()
         if len(items) < 2:
+            return
+        if self._is_any_locked(items):
             return
         # first selected is the base
         base_item = items[0]
@@ -578,6 +724,8 @@ class LayerPanel(QWidget):
     def _on_move(self, direction: int) -> None:
         item = self._tree.currentItem()
         if not item:
+            return
+        if self._is_any_locked():
             return
         self.undo_needed.emit()
         node = item.node
@@ -599,4 +747,6 @@ class LayerPanel(QWidget):
             if hasattr(item, "node"):
                 ids.extend(self._collect_layer_ids(item.node))
         if len(ids) >= 2:
+            if self._is_any_locked():
+                return
             self.merge_requested.emit(ids)

@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QSplashScreen, QMessageBox
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QPen, QDesktopServices
 from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QSurfaceFormat
 
 from .ui.main_window import MainWindow
 from .ui.welcome import WelcomeScreen
@@ -39,6 +40,16 @@ def _resolve_splash_image() -> Path | None:
 
 
 def main() -> int:
+    from .core.debug_log import log
+    log("main() starting")
+
+    gl_fmt = QSurfaceFormat()
+    gl_fmt.setVersion(3, 3)
+    gl_fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    gl_fmt.setDepthBufferSize(24)
+    gl_fmt.setSamples(4)
+    QSurfaceFormat.setDefaultFormat(gl_fmt)
+
     app = QApplication(sys.argv)
     app.setApplicationName("MakerStl")
     app.setOrganizationName("MakerStl")
@@ -80,18 +91,68 @@ def main() -> int:
     welcome = WelcomeScreen()
     window: MainWindow | None = None
 
+    def _check_crash_recovery():
+        """Check for orphaned auto-saves and offer recovery."""
+        from .core.auto_save import find_orphaned_auto_saves
+        orphans = find_orphaned_auto_saves()
+        if not orphans:
+            return
+        # show recovery dialog
+        from PySide6.QtWidgets import QMessageBox as _MB
+        msg = _MB()
+        msg.setWindowTitle("Crash Recovery")
+        msg.setIcon(_MB.Warning)
+        msg.setText(f"Found {len(orphans)} unsaved project(s) from a previous session.")
+        details = "\n".join(
+            f"  {o['original_path'].name}  ({o['mtime']:.0f})"
+            for o in orphans[:5]
+        )
+        msg.setInformativeText(
+            "MakerStl closed without saving last time.\n"
+            f"Auto-saves found:\n{details}\n\n"
+            "Recover now?"
+        )
+        rec_btn = msg.addButton("Recover", _MB.AcceptRole)
+        msg.addButton("Skip", _MB.RejectRole)
+        msg.exec()
+        if msg.clickedButton() == rec_btn and orphans:
+            _recover_auto_save(orphans[0]["auto_path"], orphans[0]["original_path"])
+
+    def _recover_auto_save(auto_path, original_path):
+        """Load an auto-save and optionally save it to the original location."""
+        nonlocal window
+        _open_main()
+        if window is None:
+            return
+        try:
+            from .core.project_io import load_project
+            project = load_project(auto_path)
+            window._apply_new_project(project, original_path)
+            window._mark_dirty()  # mark as unsaved so user saves explicitly
+            window._statusbar.showMessage(
+                f"Recovered: {original_path.name} (auto-save)", 8000
+            )
+        except Exception:
+            pass
+
     def _show_welcome():
         if splash:
             splash.finish(welcome)
         welcome.show()
         welcome.raise_()
         welcome.activateWindow()
+        QTimer.singleShot(500, _check_crash_recovery)
 
     def _open_main(activate_fn=None):
+        from .core.debug_log import log_exception
         nonlocal window
         if window is None:
-            window = MainWindow()
-            window.setWindowIcon(QIcon(str(icon)) if icon else QIcon())
+            try:
+                window = MainWindow()
+                window.setWindowIcon(QIcon(str(icon)) if icon else QIcon())
+            except Exception as e:
+                log_exception("MainWindow CRASHED", e)
+                return
         welcome.hide()
         window.show()
         window.raise_()
@@ -112,9 +173,15 @@ def main() -> int:
             w._load_project_file(Path(path))
         _open_main(activate_fn=_trigger)
 
+    def _on_import_svg(svg_path: str):
+        def _trigger(w: MainWindow):
+            w._import_svg_path(Path(svg_path))
+        _open_main(activate_fn=_trigger)
+
     welcome.create_new.connect(_on_create_new)
     welcome.open_project.connect(_on_open_project)
     welcome.open_recent.connect(_on_open_recent)
+    welcome.import_svg.connect(_on_import_svg)
 
     # show splash for 1200ms, then transition to welcome
     QTimer.singleShot(1200, _show_welcome)

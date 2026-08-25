@@ -18,6 +18,7 @@ import numpy as np
 from ..core.svg_parser import SvgLayer
 from ..core.triangulator import TriangulatedMesh
 from ..core.extruder import ExtrudedPart, ExtrusionParams
+from ..core.quality import QualitySettings
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +130,7 @@ class Project:
     global_scale: float = 1.0
     global_z_offset: float = 0.0
     base_height: float = 2.0  # height of the base plate layer
+    quality: QualitySettings = field(default_factory=QualitySettings)
 
     # original bounding box after normalization (in normalized units)
     base_size_x: float = 100.0
@@ -696,6 +698,7 @@ class Project:
 
         layer.svg_layer.vertices = outer_verts
         layer.svg_layer.hole_verts = hole_verts
-        layer.triangulated_mesh = triangulate_layer(outer_verts, hole_verts=hole_verts)
+        layer.triangulated_mesh = triangulate_layer(outer_verts, tolerance=self.quality.tolerance,
+                                                     hole_verts=hole_verts)
 
         self.recompute_extrusions()

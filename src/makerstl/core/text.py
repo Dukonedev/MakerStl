@@ -41,7 +41,7 @@ def _find_font(name: str = "Arial") -> str | None:
     return None
 
 
-def _get_contour(mask: np.ndarray) -> np.ndarray | None:
+def _get_contour(mask: np.ndarray, tolerance: float = 0.5) -> np.ndarray | None:
     """Get ordered boundary contour using Moore neighborhood tracing (Suzuki & Abe)."""
     h, w = mask.shape
 
@@ -120,7 +120,7 @@ def _get_contour(mask: np.ndarray) -> np.ndarray | None:
 
     # Douglas-Peucker simplification on open curve
     pts = np.array(points, dtype=np.float64)
-    pts = _douglas_peucker(pts, 0.5)
+    pts = _douglas_peucker(pts, tolerance)
     return pts
 
 
@@ -190,7 +190,7 @@ def _douglas_peucker(points: np.ndarray, tolerance: float) -> np.ndarray:
         return np.array([start, end], dtype=np.float64)
 
 
-def _find_holes_in_mask(mask: np.ndarray) -> list[np.ndarray]:
+def _find_holes_in_mask(mask: np.ndarray, tolerance: float = 0.5) -> list[np.ndarray]:
     """Find holes (interior empty regions) within a binary mask."""
     h, w = mask.shape
     inverted = ~mask
@@ -230,7 +230,7 @@ def _find_holes_in_mask(mask: np.ndarray) -> list[np.ndarray]:
 
         for i in range(1, n + 1):
             region_mask = labeled == i
-            contour = _get_contour(region_mask)
+            contour = _get_contour(region_mask, tolerance)
             if contour is not None and len(contour) >= 3:
                 holes.append(contour)
 
@@ -243,6 +243,8 @@ def text_to_vertices(
     font_size: float = 100.0,
     spacing: float = 0.0,
     tolerance: float = 0.3,
+    dpi: int = 300,
+    text_tolerance: float = 0.5,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
     """Convert text to a list of (outer_verts, [hole_verts]) tuples.
 
@@ -259,14 +261,14 @@ def text_to_vertices(
     for char in text:
         if char == ' ':
             try:
-                f = ImageFont.truetype(font_path, int(font_size * 300 / 25.4))
+                f = ImageFont.truetype(font_path, int(font_size * dpi / 25.4))
                 bbox = f.getbbox("M")
-                x_offset += (bbox[2] - bbox[0]) * 0.35 * 25.4 / 300
+                x_offset += (bbox[2] - bbox[0]) * 0.35 * 25.4 / dpi
             except Exception:
                 x_offset += font_size * 0.35
             continue
 
-        img, scale = _render_text_to_image(char, font_path, font_size)
+        img, scale = _render_text_to_image(char, font_path, font_size, dpi=dpi)
         binary = np.array(img) > 128
 
         if not binary.any():
@@ -284,7 +286,7 @@ def text_to_vertices(
                 continue
 
             # get outer contour
-            outer = _get_contour(mask)
+            outer = _get_contour(mask, text_tolerance)
             if outer is None or len(outer) < 3:
                 continue
 
@@ -294,7 +296,7 @@ def text_to_vertices(
 
             # find holes
             holes = []
-            hole_contours = _find_holes_in_mask(mask)
+            hole_contours = _find_holes_in_mask(mask, text_tolerance)
             for hole in hole_contours:
                 hole[:, 0] = hole[:, 0] * scale + x_offset
                 hole[:, 1] = (binary.shape[0] - hole[:, 1]) * scale

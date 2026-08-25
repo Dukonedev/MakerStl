@@ -8,7 +8,7 @@ from datetime import datetime
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QScrollArea, QSizePolicy,
+    QFrame, QScrollArea, QSizePolicy, QGridLayout, QSpacerItem,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QUrl
 from PySide6.QtGui import QFont, QColor, QPainter, QPainterPath, QPen, QPixmap, QDesktopServices
@@ -20,10 +20,12 @@ class WelcomeScreen(QWidget):
     create_new = Signal()
     open_project = Signal()
     open_recent = Signal(str)  # file path
+    import_svg = Signal(str)  # SVG file path dropped on welcome
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(900, 600)
+        self.setAcceptDrops(True)
         self._recent_files: list[Path] = []
         self._setup_ui()
         self._load_recent_files()
@@ -268,35 +270,14 @@ class WelcomeScreen(QWidget):
     # ------------------------------------------------------------------
 
     def _load_recent_files(self) -> None:
-        """Scan common locations for .makerstl files."""
-        search_dirs = [
-            Path.home() / "Documents",
-            Path.home() / "Downloads",
-        ]
-        found: list[tuple[Path, float]] = []
-        seen: set[str] = set()
-
-        for d in search_dirs:
-            if not d.is_dir():
-                continue
-            for f in d.glob("**/*.makerstl"):
-                key = str(f.resolve())
-                if key in seen:
-                    continue
-                seen.add(key)
-                try:
-                    mtime = f.stat().st_mtime
-                    found.append((f, mtime))
-                except OSError:
-                    continue
-
-        # sort by modification time, newest first
-        found.sort(key=lambda x: x[1], reverse=True)
-        self._recent_files = [f for f, _ in found[:10]]
+        """Load recent projects from the recent_projects module."""
+        from ..core.recent_projects import load_recent
+        entries = load_recent()
+        self._recent_files = [Path(e["path"]) for e in entries if Path(e["path"]).exists()]
         self._rebuild_recent_list()
 
     def _rebuild_recent_list(self) -> None:
-        """Repopulate the recent files list."""
+        """Repopulate the recent files grid with thumbnail cards."""
         # clear existing
         while self._recent_list_layout.count():
             item = self._recent_list_layout.takeAt(0)
@@ -311,25 +292,106 @@ class WelcomeScreen(QWidget):
             self._recent_list_layout.addWidget(empty)
             return
 
-        for path in self._recent_files:
-            btn = self._make_recent_button(path)
-            self._recent_list_layout.addWidget(btn)
+        # grid layout: 3 columns of thumbnail cards
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        grid.setContentsMargins(0, 8, 0, 0)
 
-    def _make_recent_button(self, path: Path) -> QPushButton:
-        """Create a styled button for one recent file."""
-        btn = QPushButton()
-        btn.setObjectName("recentBtn")
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.setFixedHeight(56)
+        for i, path in enumerate(self._recent_files[:8]):
+            row, col = divmod(i, 4)
+            card = self._make_recent_card(path)
+            grid.addWidget(card, row, col)
 
-        mtime = datetime.fromtimestamp(path.stat().st_mtime)
-        date_str = mtime.strftime("%d %b %Y, %H:%M")
+        self._recent_list_layout.addLayout(grid)
 
-        btn.setText(f"  {path.stem}")
-        btn.setToolTip(str(path))
+    def _make_recent_card(self, path: Path) -> QWidget:
+        """Create a thumbnail card for one recent project."""
+        from ..core.recent_projects import get_thumbnail_path
 
-        # we use a custom paint or just format text
-        display = f"{path.stem}    {date_str}"
-        btn.setText(f"  {display}")
-        btn.clicked.connect(lambda checked, p=str(path): self.open_recent.emit(p))
-        return btn
+        card = QWidget()
+        card.setCursor(Qt.PointingHandCursor)
+        card.setFixedSize(220, 180)
+        card.setStyleSheet("""
+            QWidget {
+                background-color: #2a2a2a;
+                border: 1px solid #3a3a3a;
+                border-radius: 8px;
+            }
+            QWidget:hover {
+                border-color: #2680eb;
+                background-color: #303030;
+            }
+        """)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(0)
+
+        # thumbnail — full width cover
+        thumb_label = QLabel()
+        thumb_label.setFixedHeight(120)
+        thumb_label.setAlignment(Qt.AlignCenter)
+        thumb_label.setStyleSheet("border: none; background: #222; border-radius: 4px;")
+
+        thumb_path = get_thumbnail_path(path)
+        if thumb_path:
+            pixmap = QPixmap(str(thumb_path))
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(208, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                thumb_label.setPixmap(pixmap)
+            else:
+                thumb_label.setText(path.stem[:15])
+        else:
+            thumb_label.setText(path.stem[:15])
+
+        layout.addWidget(thumb_label)
+
+        # footer: name + date
+        footer = QWidget()
+        footer.setStyleSheet("border: none; background: transparent;")
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(4, 4, 4, 0)
+        footer_layout.setSpacing(1)
+
+        name_label = QLabel(path.stem)
+        name_label.setStyleSheet("color: #e0e0e0; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        footer_layout.addWidget(name_label)
+
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime)
+            date_str = mtime.strftime("%d %b %Y, %H:%M")
+        except Exception:
+            date_str = ""
+        date_label = QLabel(date_str)
+        date_label.setStyleSheet("color: #777; font-size: 9px; border: none; background: transparent;")
+        footer_layout.addWidget(date_label)
+
+        layout.addWidget(footer)
+
+        card.mousePressEvent = lambda e, p=str(path): self.open_recent.emit(p)
+        return card
+
+    def _make_color_grid_text(self, path: Path) -> str:
+        return f"  {path.stem[:20]}"
+
+    # ------------------------------------------------------------------
+    # Drag and drop
+    # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                p = url.toLocalFile().lower()
+                if p.endswith(".svg") or p.endswith(".makerstl"):
+                    event.acceptProposedAction()
+                    return
+
+    def dropEvent(self, event) -> None:
+        for url in event.mimeData().urls():
+            p = url.toLocalFile()
+            if p.lower().endswith(".makerstl"):
+                self.open_recent.emit(p)
+                return
+            elif p.lower().endswith(".svg"):
+                self.import_svg.emit(p)
+                return

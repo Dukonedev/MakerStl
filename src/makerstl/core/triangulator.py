@@ -117,8 +117,6 @@ def _triangulate_geometry(
 
 def triangulate_layer(
     layer_verts: np.ndarray,
-    quality: float = 20.0,
-    max_area: float | None = None,
     tolerance: float = 0.1,
     hole_verts: list[np.ndarray] | None = None,
 ) -> TriangulatedMesh | None:
@@ -146,6 +144,10 @@ def triangulate_layer(
             geom = geom.buffer(0)
         if geom.is_empty:
             return None
+        if tolerance > 0:
+            simplified = geom.simplify(tolerance, preserve_topology=True)
+            if not simplified.is_empty and isinstance(simplified, (Polygon, MultiPolygon)):
+                geom = simplified
     else:
         geom = _clean_geometry(layer_verts)
         if geom is None:
@@ -174,8 +176,6 @@ def triangulate_layer(
 
 def triangulate_layers(
     layers: list[tuple[str, np.ndarray]],
-    quality: float = 20.0,
-    max_area: float | None = None,
     tolerance: float = 0.1,
     hole_data: dict[str, list[np.ndarray]] | None = None,
 ) -> dict[str, TriangulatedMesh]:

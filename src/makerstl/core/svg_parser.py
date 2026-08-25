@@ -227,16 +227,23 @@ def _strip_ns(tag: str) -> str:
 
 
 def _parse_css_rules(style_text: str) -> dict[str, dict[str, str]]:
-    """Parse CSS text into {selector: {property: value}}."""
-    rules = {}
+    """Parse CSS text into {selector: {property: value}}.
+
+    Handles comma-separated selectors (e.g. ``.cls-2, .cls-3 { ... }``)
+    by registering each individual selector separately.
+    """
+    rules: dict[str, dict[str, str]] = {}
     for m in re.finditer(r"([^{]+)\{([^}]+)\}", style_text):
-        selector = m.group(1).strip().lstrip(".")
-        props = {}
+        raw_selector = m.group(1).strip()
+        props: dict[str, str] = {}
         for decl in m.group(2).split(";"):
             kv = decl.split(":", 1)
             if len(kv) == 2:
                 props[kv[0].strip()] = kv[1].strip()
-        rules[selector] = props
+        for sel in raw_selector.split(","):
+            sel = sel.strip().lstrip(".")
+            if sel:
+                rules[sel] = props
     return rules
 
 
@@ -283,8 +290,43 @@ def _resolve_fill(element, css_rules: dict, inherited_fill: str | None = None) -
     return None
 
 
-def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=None):
-    """Recursively walk SVG DOM, tracking inherited fill colors and fill-rules."""
+def _resolve_stroke(element, css_rules: dict, inherited_stroke: str | None = None) -> str | None:
+    """Resolve the stroke color for an element (same cascade as fill)."""
+    def _is_valid_stroke(val: str) -> bool:
+        return bool(val) and val != "none" and val != "inherit" and not val.startswith("url(")
+
+    # 1. Direct inline style
+    style = element.get("style", "")
+    for part in style.split(";"):
+        kv = part.split(":", 1)
+        if len(kv) == 2 and kv[0].strip() == "stroke":
+            val = kv[1].strip()
+            if _is_valid_stroke(val):
+                return val
+
+    # 2. Direct stroke attribute
+    stroke = element.get("stroke")
+    if _is_valid_stroke(stroke):
+        return stroke
+
+    # 3. CSS class
+    cls = element.get("class", "")
+    for c in cls.split():
+        if c in css_rules and "stroke" in css_rules[c]:
+            val = css_rules[c]["stroke"]
+            if _is_valid_stroke(val):
+                return val
+
+    # 4. Inherited from parent
+    if inherited_stroke and inherited_stroke != "none":
+        return inherited_stroke
+
+    return None
+
+
+def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=None,
+                    inherited_stroke=None, circle_segments=32):
+    """Recursively walk SVG DOM, tracking inherited fill/stroke colors and fill-rules."""
     tag = _strip_ns(element.tag)
 
     # resolve fill for this element
@@ -292,6 +334,10 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
 
     # the effective fill to pass to children: use current if found, else inherit parent's
     effective_fill = current_fill if current_fill else inherited_fill
+
+    # resolve stroke for this element
+    current_stroke = _resolve_stroke(element, css_rules, inherited_stroke)
+    effective_stroke = current_stroke if current_stroke else inherited_stroke
 
     # resolve fill-rule (nonzero is SVG default)
     current_fill_rule = element.get("fill-rule", inherited_fill_rule) or "nonzero"
@@ -307,6 +353,7 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
             "d": d,
             "id": eid,
             "fill": current_fill,
+            "stroke": current_stroke,
             "transform": transform,
             "fill_opacity": fill_opacity,
             "fill_rule": current_fill_rule,
@@ -328,6 +375,7 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
             "d": d,
             "id": eid,
             "fill": current_fill,
+            "stroke": current_stroke,
             "transform": transform,
             "fill_opacity": fill_opacity,
             "fill_rule": current_fill_rule,
@@ -342,16 +390,17 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
         opacity = element.get("fill-opacity", element.get("opacity"))
         fill_opacity = float(opacity) if opacity else 1.0
 
-        # approximate circle as polygon (32 segments)
+        # approximate circle as polygon
         pts = []
-        for i in range(32):
-            angle = 2 * np.pi * i / 32
+        for i in range(circle_segments):
+            angle = 2 * np.pi * i / circle_segments
             pts.append(f"{cx + r * np.cos(angle):.2f},{cy + r * np.sin(angle):.2f}")
         d = "M" + " L".join(pts) + " Z"
         yield {
             "d": d,
             "id": eid,
             "fill": current_fill,
+            "stroke": current_stroke,
             "transform": transform,
             "fill_opacity": fill_opacity,
             "fill_rule": current_fill_rule,
@@ -368,14 +417,15 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
         fill_opacity = float(opacity) if opacity else 1.0
 
         pts = []
-        for i in range(32):
-            angle = 2 * np.pi * i / 32
+        for i in range(circle_segments):
+            angle = 2 * np.pi * i / circle_segments
             pts.append(f"{cx + rx * np.cos(angle):.2f},{cy + ry * np.sin(angle):.2f}")
         d = "M" + " L".join(pts) + " Z"
         yield {
             "d": d,
             "id": eid,
             "fill": current_fill,
+            "stroke": current_stroke,
             "transform": transform,
             "fill_opacity": fill_opacity,
             "fill_rule": current_fill_rule,
@@ -405,6 +455,7 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
                 "d": d,
                 "id": eid,
                 "fill": current_fill,
+                "stroke": current_stroke,
                 "transform": transform,
                 "fill_opacity": fill_opacity,
                 "fill_rule": current_fill_rule,
@@ -412,7 +463,8 @@ def _walk_elements(element, css_rules, inherited_fill=None, inherited_fill_rule=
 
     # recurse into children (groups, etc.)
     for child in element:
-        yield from _walk_elements(child, css_rules, effective_fill, current_fill_rule)
+        yield from _walk_elements(child, css_rules, effective_fill, current_fill_rule,
+                                  effective_stroke, circle_segments)
 
 
 def _split_compound_path(d: str) -> list[str]:
@@ -558,9 +610,11 @@ def _assemble_compound_paths(
 class SvgParser:
     """Parse SVG file and return structured layers."""
 
-    def __init__(self, svg_path: str | Path, max_step: float = 0.5):
+    def __init__(self, svg_path: str | Path, max_step: float = 0.5,
+                 circle_segments: int = 32):
         self.svg_path = Path(svg_path)
         self.max_step = max_step
+        self.circle_segments = circle_segments
         self._doc_width: float = 0
         self._doc_height: float = 0
 
@@ -594,13 +648,19 @@ class SvgParser:
         layers: list[SvgLayer] = []
         idx = 0
 
-        for item in _walk_elements(root, css_rules):
+        for item in _walk_elements(root, css_rules, circle_segments=self.circle_segments):
             d = item["d"]
             if not d:
                 continue
 
             fill_rule = item.get("fill_rule", "nonzero")
             color = _parse_color(item["fill"]) if item["fill"] else (0, 0, 0)
+
+            # Fallback: if fill is black (default), try stroke color
+            if color == (0, 0, 0) and item.get("stroke"):
+                stroke_color = _parse_color(item["stroke"])
+                if stroke_color != (0, 0, 0):
+                    color = stroke_color
 
             # Always split compound paths into individual sub-paths
             sub_paths = _split_compound_path(d)
