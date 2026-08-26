@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "makerstl"
-version = "0.3.0"
+version = "0.4.0"
 description = "SVG to 3D model converter with color 3MF export"
 requires-python = ">=3.10"
 dependencies = [
