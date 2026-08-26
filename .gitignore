@@ -13,6 +13,9 @@ __pycache__/
 *.egg
 .eggs/
 
+# Keygen (separate project, local only)
+keygen/
+
 # IDE
 .vscode/
 .idea/
@@ -21,6 +24,12 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Testing
+.pytest_cache/
+
 # Session / test files
 session-*.md
 *.3mf
+
+# Temp
+temp_*/
