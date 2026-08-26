@@ -1,0 +1,59 @@
+# Progetto Generatore di Portachiavi 3D
+
+Questo documento descrive in dettaglio il processo di creazione dei portachiavi all'interno del progetto, con particolare attenzione alle tipologie supportate e a tutte le opzioni di personalizzazione disponibili.
+
+## Tipologie di Base del Portachiavi (`baseShape`)
+
+Il sistema supporta tre forme principali per la base su cui viene stampato il testo:
+
+1.  **Outline (Contorno)**:
+    La base segue esattamente la forma del testo inserito, creando un bordo offset (contorno) attorno alle lettere. Ideale per nomi e scritte sagomate.
+2.  **Capsule (Capsula/Ovale)**:
+    Una base di forma geometrica standard (simile a un ovale o un rettangolo con gli angoli molto arrotondati) su cui viene appoggiato il testo. Consigliata per loghi aziendali o testi molto lunghi.
+3.  **Template (Sagome Personalizzate / Gadgets)**:
+    Permette l'uso di forme predefinite o file SVG caricati (es. "Phone Stand", "Round Coaster", "Large Key Tag") come base.
+
+---
+
+## Opzioni di Personalizzazione e Configurazione
+
+L'utente dispone di un numero elevato di parametri per modificare l'aspetto del modello 3D, suddivisi per categoria:
+
+### 1. Opzioni del Testo
+*   **Testo (`text`)**: Il contenuto principale del portachiavi.
+*   **Font (`fontUrl`)**: Lo stile del carattere tipografico.
+*   **Dimensione e Scala (`fontSize`, `fontScaleX`)**: Grandezza del testo e larghezza (per stringere o allargare i caratteri).
+*   **Spaziatura (`letterSpacing`)**: La distanza orizzontale tra le singole lettere.
+*   **Profondità dell'Estrusione (`textDepth`)**: Quanto il testo sporge rispetto alla base.
+*   **Posizionamento (`textOffsetX`, `textOffsetY`, `textOffsetZ`)**: Per spostare manualmente il testo sulla base (utile soprattutto nei template o forme capsulari).
+
+### 2. Opzioni della Base principale
+*   **Spessore (`thickness`)**: Lo spessore (Z) della base solida del portachiavi.
+*   **Margine del Contorno (`outlineSize`)**: Nel caso del tipo "Outline", definisce quanto la base è più grande del testo.
+*   **Larghezza (`baseWidth`)**: Regola la larghezza per i modelli a capsula.
+*   **Arrotondamento Angoli (`roundness`, `baseRoundness`)**: Definisce quanto gli angoli della base sono morbidi e smussati.
+*   **Smusso dei Bordi (`edgeRoundness`)**: (Fillet) Arrotonda gli spigoli superiori e inferiori della base per rendere l'oggetto più piacevole al tatto ed esteticamente migliore per la stampa.
+
+### 3. Opzioni dell'Anello (Foro per il Portachiavi)
+*   **Mostra Anello (`showRing`)**: Attiva o disattiva il foro/gancio laterale.
+*   **Sovrapposizione (`ringOverlap`)**: Decide quanto il foro "entra" nella base rispetto al posizionamento esterno.
+*   **Posizione e Offset (`ringPosition`, `ringOffsetY`)**: Permette di spostare il foro sul perimetro dell'oggetto (es. in alto, in basso o sui lati).
+
+### 4. Livelli Aggiuntivi e Bordi Multipli
+*   **Bordo Esterno (`addBorder`)**: Aggiunge un rialzo lungo tutto il perimetro della base (utile per contenere resina o per design specifici).
+*   **Secondo Contorno (`addSecondOutline`)**: Crea un ulteriore livello sfalsato (es. una base a "gradini").
+*   **Dimensioni e smussi del Secondo Contorno (`secondOutlineSize`, `secondOutlineDepth`, `secondOutlineEdgeRoundness`)**: Parametri per regolare l'offset, lo spessore e la smussatura del livello aggiuntivo.
+
+### 5. Colori e Stile (Preview e Stampa Multi-colore)
+*   **Colore Base (`color`, `baseLayerColor`)**: Il colore del materiale di sfondo.
+*   **Colore Testo (`textColor`)**: Il colore del materiale del testo (spesso ottenuto con il cambio filamento tramite M600 nella stampa 3D).
+*   **Configurazione strati avanzata (`layerConfig`)**: Per i portachiavi SVG multi-livello (Ultra Mode), permette di personalizzare l'altimetria e i colori di specifici tratti del disegno.
+
+---
+
+## Flusso di Lavoro (Workflow)
+
+1.  **Impostazioni**: L'utente seleziona la forma base (`outline`, `capsule`, ecc.) e inserisce il testo.
+2.  **Calibrazione Estetica**: Tramite i parametri di dimensioni, arrotondamento e offset, aggiusta le tolleranze perfette.
+3.  **Rendering Real-Time**: L'engine 3D carica i font, elabora vettorialmente le geometrie (includendo l'operazione booleana per unire/ritagliare il foro dell'anello) e mostra il risultato a schermo.
+4.  **Esportazione (ExportManager)**: Il modello viene compilato e scaricato come file STL pronto per lo Slicer (Cura, PrusaSlicer, BambuStudio) e infine per la Stampante 3D.

@@ -176,6 +176,7 @@ class Viewport3D(QOpenGLWidget):
     layer_clicked = Signal(str)
     transform_changed = Signal()
     gizmo_drag_started = Signal()
+    cursor_world_changed = Signal(float, float, float)  # x, y, z in mm
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -223,6 +224,11 @@ class Viewport3D(QOpenGLWidget):
         # mesh VBO cache: layer_id -> (vao, index_count)
         self._mesh_vaos: dict[str, tuple[int, int]] = {}
 
+        # preview parts (temporary geometry, not part of the project)
+        self._preview_parts: list = []  # list of ExtrudedPart
+        self._preview_vaos: dict[str, tuple[int, int]] = {}
+        self._pick_vaos: dict[str, tuple[int, int, int, int]] = {}
+
         self.setMinimumSize(400, 300)
         self.setMouseTracking(True)
 
@@ -251,10 +257,26 @@ class Viewport3D(QOpenGLWidget):
         self._project = project
         self._highlighted_layer = None
         self._mesh_vaos.clear()
+        self._pick_vaos.clear()
         self.update()
 
     def refresh(self) -> None:
         self._mesh_vaos.clear()
+        self._pick_vaos.clear()
+        self.update()
+
+    def set_preview_parts(self, parts: list) -> None:
+        """Set temporary preview geometry (e.g. keychain preview)."""
+        self._preview_parts = parts
+        self._preview_vaos.clear()
+        self.update()
+
+    def clear_preview(self) -> None:
+        """Remove temporary preview geometry."""
+        if not self._preview_parts:
+            return
+        self._preview_parts = []
+        self._preview_vaos.clear()
         self.update()
 
     def fit_to_scene(self) -> None:
@@ -299,6 +321,29 @@ class Viewport3D(QOpenGLWidget):
             self._grid_step = 10 * magnitude
 
         self._far_clip = max(10000.0, max_dim * 100)
+        self.update()
+
+    def fit_to_layer(self, layer_id: str) -> None:
+        """Frame the camera on a single layer by its ID."""
+        layer = self._project.get_layer_by_id(layer_id)
+        if layer is None or layer.extruded_part is None:
+            return
+        verts = layer.extruded_part.vertices
+        if len(verts) == 0:
+            return
+
+        vmin = verts.min(axis=0)
+        vmax = verts.max(axis=0)
+        center = (vmin + vmax) / 2.0
+        extent = vmax - vmin
+        max_dim = max(extent[0], extent[1], extent[2])
+
+        if max_dim < 1e-6:
+            max_dim = 10.0
+
+        self._zoom = max_dim * 1.8
+        self._pan_x = -center[0]
+        self._pan_y = -center[1]
         self.update()
 
     def highlight_layer(self, layer_id: str) -> None:
@@ -501,14 +546,28 @@ class Viewport3D(QOpenGLWidget):
 
             self._draw_mesh_vbo(layer.svg_layer.id, part.vertices, part.faces, part.normals)
 
+        # draw preview parts (temporary geometry)
+        for i, part in enumerate(self._preview_parts):
+            if len(part.faces) == 0:
+                continue
+            r, g, b = part.color
+            self._mesh_shader.set_vec3("uBaseColor", r / 255, g / 255, b / 255)
+            preview_id = f"_preview_{i}"
+            self._draw_mesh_vbo(preview_id, part.vertices, part.faces, part.normals,
+                                cache=self._preview_vaos)
+
     def _draw_mesh_vbo(self, layer_id: str, verts: np.ndarray,
-                       faces: np.ndarray, normals: np.ndarray | None = None) -> None:
+                       faces: np.ndarray, normals: np.ndarray | None = None,
+                       cache: dict | None = None) -> None:
         if len(faces) == 0:
             return
         if normals is None:
             normals = compute_normals(verts, faces)
 
-        if layer_id not in self._mesh_vaos:
+        if cache is None:
+            cache = self._mesh_vaos
+
+        if layer_id not in cache:
             vao = glGenVertexArrays(1)
             pos_vbo = glGenBuffers(1)
             norm_vbo = glGenBuffers(1)
@@ -533,9 +592,9 @@ class Viewport3D(QOpenGLWidget):
                          faces.astype(np.uint32), GL_STATIC_DRAW)
 
             glBindVertexArray(0)
-            self._mesh_vaos[layer_id] = (vao, len(faces) * 3)
+            cache[layer_id] = (vao, len(faces) * 3)
 
-        vao, index_count = self._mesh_vaos[layer_id]
+        vao, index_count = cache[layer_id]
         glBindVertexArray(vao)
         glDrawElements(GL_TRIANGLES, index_count, GL_UNSIGNED_INT, None)
         glBindVertexArray(0)
@@ -902,7 +961,7 @@ class Viewport3D(QOpenGLWidget):
             elif self._gizmo_active_axis == 1:
                 layer.extrusion_params.scale_y = base_sy * scale_factor
 
-        self._project.recompute_extrusions()
+        self._project.recompute_extrusions(dirty_layer_ids=[self._highlighted_layer])
         self.update()
 
     # ------------------------------------------------------------------
@@ -966,6 +1025,11 @@ class Viewport3D(QOpenGLWidget):
             self._zoom *= 1.0 + dy * 0.01
             self._zoom = max(1, min(5000, self._zoom))
 
+        # emit world coordinates on hover
+        if self._mouse_button is None or self._mouse_button == Qt.MouseButton.NoButton:
+            world = self._screen_to_world(event.position().toPoint(), 0.0)
+            self.cursor_world_changed.emit(float(world[0]), float(world[1]), float(world[2]))
+
         self.update()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
@@ -1004,11 +1068,19 @@ class Viewport3D(QOpenGLWidget):
             r, g, b = _index_to_pick_color(idx)
             self._pick_shader.set_vec3("uPickColor", r, g, b)
 
-            self._draw_pick_mesh(part.vertices, part.faces)
+            self._draw_pick_mesh(layer.svg_layer.id, part.vertices, part.faces)
             idx += 1
 
-    def _draw_pick_mesh(self, verts: np.ndarray, faces: np.ndarray) -> None:
+    def _draw_pick_mesh(self, layer_id: str, verts: np.ndarray, faces: np.ndarray) -> None:
         if len(faces) == 0:
+            return
+
+        cached = self._pick_vaos.get(layer_id)
+        if cached is not None:
+            vao, pos_vbo, ebo, idx_count = cached
+            glBindVertexArray(vao)
+            glDrawElements(GL_TRIANGLES, idx_count, GL_UNSIGNED_INT, None)
+            glBindVertexArray(0)
             return
 
         vao = glGenVertexArrays(1)
@@ -1027,13 +1099,12 @@ class Viewport3D(QOpenGLWidget):
                      faces.astype(np.uint32), GL_STATIC_DRAW)
         glBindVertexArray(0)
 
-        glBindVertexArray(vao)
-        glDrawElements(GL_TRIANGLES, len(faces) * 3, GL_UNSIGNED_INT, None)
-        glBindVertexArray(0)
+        idx_count = len(faces) * 3
+        self._pick_vaos[layer_id] = (vao, pos_vbo, ebo, idx_count)
 
-        glDeleteVertexArrays(1, [vao])
-        glDeleteBuffers(1, [pos_vbo])
-        glDeleteBuffers(1, [ebo])
+        glBindVertexArray(vao)
+        glDrawElements(GL_TRIANGLES, idx_count, GL_UNSIGNED_INT, None)
+        glBindVertexArray(0)
 
     def _pick_layer(self, pos: QPoint) -> None:
         self.makeCurrent()

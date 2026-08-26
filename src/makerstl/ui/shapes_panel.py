@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QToolButton, QGroupBox,
     QGridLayout, QInputDialog, QFormLayout, QDoubleSpinBox,
     QDialog, QLineEdit, QComboBox, QDialogButtonBox, QLabel,
+    QScrollArea, QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush
@@ -101,7 +102,18 @@ class ShapesPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(2)
 
@@ -147,6 +159,9 @@ class ShapesPanel(QWidget):
         layout.addWidget(text_btn)
 
         layout.addStretch()
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def _on_shape(self, key: str) -> None:
         from PySide6.QtWidgets import QInputDialog

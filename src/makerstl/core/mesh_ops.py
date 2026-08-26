@@ -55,18 +55,72 @@ def compute_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
 
 
 def fix_normals_direction(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    """Ensure all face normals point outward (away from centroid)."""
-    centroid = verts.mean(axis=0)
+    """Ensure all face normals point outward using BFS flood-fill.
+
+    Propagates consistent winding from a seed face through adjacent edges.
+    Works correctly for concave shapes (donuts, keychains) where centroid-based
+    approaches fail.
+    """
+    from collections import deque
+
+    n_faces = len(faces)
+    if n_faces == 0:
+        return faces.copy()
+
     fixed_faces = faces.copy()
 
+    # build edge-to-face adjacency
+    edge_faces: dict[tuple[int, int], list[int]] = {}
     for i, face in enumerate(fixed_faces):
-        v0, v1, v2 = verts[face[0]], verts[face[1]], verts[face[2]]
-        face_center = (v0 + v1 + v2) / 3.0
-        normal = np.cross(v1 - v0, v2 - v0)
+        for j in range(3):
+            a, b = int(face[j]), int(face[(j + 1) % 3])
+            key = (min(a, b), max(a, b))
+            edge_faces.setdefault(key, []).append(i)
 
-        # if normal points toward centroid, flip
-        if np.dot(normal, face_center - centroid) < 0:
-            fixed_faces[i] = [face[0], face[2], face[1]]
+    # pick seed: face with highest Z center (most likely top face, normal = +Z)
+    face_centers_z = np.array([
+        (verts[f[0], 2] + verts[f[1], 2] + verts[f[2], 2]) / 3.0
+        for f in fixed_faces
+    ])
+    seed = int(np.argmax(face_centers_z))
+
+    # check seed winding: normal should point up for highest-Z face
+    v0, v1, v2 = verts[fixed_faces[seed][0]], verts[fixed_faces[seed][1]], verts[fixed_faces[seed][2]]
+    normal = np.cross(v1 - v0, v2 - v0)
+    if normal[2] < 0:
+        fixed_faces[seed] = [fixed_faces[seed][0], fixed_faces[seed][2], fixed_faces[seed][1]]
+
+    # BFS: propagate consistent winding to all adjacent faces
+    visited = set()
+    queue = deque([seed])
+    visited.add(seed)
+
+    while queue:
+        fi = queue.popleft()
+        face_a = fixed_faces[fi]
+
+        for j in range(3):
+            a, b = int(face_a[j]), int(face_a[(j + 1) % 3])
+            key = (min(a, b), max(a, b))
+
+            for neighbor in edge_faces.get(key, []):
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+
+                face_b = fixed_faces[neighbor]
+                b_indices = [int(face_b[k]) for k in range(3)]
+                try:
+                    idx_a = b_indices.index(a)
+                    idx_b = b_indices.index(b)
+                except ValueError:
+                    continue
+
+                # same direction (a→b in both) = inconsistent winding → flip
+                if (idx_b - idx_a) % 3 == 1:
+                    fixed_faces[neighbor] = [face_b[0], face_b[2], face_b[1]]
+
+                queue.append(neighbor)
 
     return fixed_faces
 

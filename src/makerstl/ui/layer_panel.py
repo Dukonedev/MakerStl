@@ -120,11 +120,11 @@ class _EyeColumnDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Position: centered vertically, 8px from left edge
+        # Position: centered vertically and horizontally
         rect = option.rect
-        cx = rect.left() + 12
+        cx = rect.left() + rect.width() // 2
         cy = rect.center().y()
-        s = 7  # half-size of eye
+        s = 6  # half-size of eye
 
         if visible:
             # Open eye
@@ -364,7 +364,7 @@ class LayerPanel(QWidget):
         self._tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._tree.setDefaultDropAction(Qt.DropAction.MoveAction)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._tree.setColumnWidth(0, 40)   # eye column
+        self._tree.setColumnWidth(0, 36)   # eye column
         self._tree.setColumnWidth(1, 36)   # lock column
         self._tree.setColumnWidth(2, 160)  # name column
         self._tree.setColumnWidth(3, 24)   # color column

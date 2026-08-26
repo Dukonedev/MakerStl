@@ -99,6 +99,8 @@ class Test3MFExport:
         export_3mf([part], path)
 
         with zipfile.ZipFile(path) as zf:
-            model = zf.read("3D/3dmodel.model").decode()
-            assert "basematerials" in model
-            assert "#FF0000" in model
+            # Colors are in Bambu-specific model_settings.config, not basematerials
+            names = zf.namelist()
+            assert "Metadata/model_settings.config" in names
+            config = zf.read("Metadata/model_settings.config").decode()
+            assert "extruder" in config

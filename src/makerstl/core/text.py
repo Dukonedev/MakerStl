@@ -162,6 +162,17 @@ def _label_connected(binary: np.ndarray) -> tuple[np.ndarray, int]:
     return labeled, num
 
 
+def _signed_area_2d(verts: np.ndarray) -> float:
+    """Signed area of a 2D polygon (positive = CCW, negative = CW)."""
+    n = len(verts)
+    if n < 3:
+        return 0.0
+    return sum(
+        verts[i][0] * verts[(i + 1) % n][1] - verts[(i + 1) % n][0] * verts[i][1]
+        for i in range(n)
+    ) / 2.0
+
+
 def _douglas_peucker(points: np.ndarray, tolerance: float) -> np.ndarray:
     """Douglas-Peucker line simplification."""
     if len(points) < 3:
@@ -245,11 +256,15 @@ def text_to_vertices(
     tolerance: float = 0.3,
     dpi: int = 300,
     text_tolerance: float = 0.5,
+    font_scale_x: float = 1.0,
 ) -> list[tuple[np.ndarray, list[np.ndarray]]]:
     """Convert text to a list of (outer_verts, [hole_verts]) tuples.
 
     Uses Pillow for font rendering (includes hinting), then extracts contours.
     Each element represents one character shape.
+
+    Args:
+        font_scale_x: horizontal stretch factor (1.0 = normal, <1 = compressed, >1 = stretched).
     """
     font_path = _find_font(font_name)
     if font_path is None:
@@ -308,6 +323,27 @@ def text_to_vertices(
         # advance
         char_width = img.width * scale
         x_offset += char_width + spacing
+
+    # apply horizontal stretch if requested
+    if font_scale_x != 1.0 and results:
+        for i, (outer, holes) in enumerate(results):
+            outer[:, 0] *= font_scale_x
+            for j, hole in enumerate(holes):
+                holes[j][:, 0] *= font_scale_x
+
+    # ensure holes have opposite winding from their outer ring
+    for i, (outer, holes) in enumerate(results):
+        if len(holes) == 0:
+            continue
+        outer_area = _signed_area_2d(outer)
+        fixed_holes = []
+        for hole in holes:
+            hole_area = _signed_area_2d(hole)
+            if outer_area * hole_area > 0:
+                # same winding → reverse
+                hole = hole[::-1].copy()
+            fixed_holes.append(hole)
+        results[i] = (outer, fixed_holes)
 
     return results
 

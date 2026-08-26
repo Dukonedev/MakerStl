@@ -2,24 +2,24 @@
 
 import numpy as np
 
-from makerstl.core.triangulator import triangulate_layer, _clean_polygon
+from makerstl.core.triangulator import triangulate_layer, _clean_geometry
 
 
 class TestPolygonCleaning:
     def test_simple_triangle(self):
         verts = np.array([[0, 0], [1, 0], [0.5, 1]], dtype=np.float64)
-        poly = _clean_polygon(verts)
+        poly = _clean_geometry(verts)
         assert poly is not None
         assert poly.is_valid
 
     def test_closed_ring(self):
         verts = np.array([[0, 0], [1, 0], [1, 1], [0, 0]], dtype=np.float64)
-        poly = _clean_polygon(verts)
+        poly = _clean_geometry(verts)
         assert poly is not None
 
     def test_too_few_verts(self):
         verts = np.array([[0, 0], [1, 0]], dtype=np.float64)
-        poly = _clean_polygon(verts)
+        poly = _clean_geometry(verts)
         assert poly is None
 
 

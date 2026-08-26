@@ -42,6 +42,8 @@ def _serialize_params(p: ExtrusionParams) -> dict:
         "scale_x": p.scale_x,
         "scale_y": p.scale_y,
         "chamfer": p.chamfer,
+        "bevel_radius": p.bevel_radius,
+        "bevel_segments": p.bevel_segments,
         "translate_x": p.translate_x,
         "translate_y": p.translate_y,
     }
@@ -131,6 +133,8 @@ def _deserialize_params(d: dict) -> ExtrusionParams:
         scale_x=d.get("scale_x", 1.0),
         scale_y=d.get("scale_y", 1.0),
         chamfer=d.get("chamfer", 0.0),
+        bevel_radius=d.get("bevel_radius", 0.0),
+        bevel_segments=d.get("bevel_segments", 3),
         translate_x=d.get("translate_x", 0.0),
         translate_y=d.get("translate_y", 0.0),
     )

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QDoubleSpinBox,
     QPushButton, QColorDialog, QLabel, QGroupBox,
     QSizePolicy, QToolButton, QComboBox, QSpinBox,
+    QScrollArea, QFrame,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
@@ -30,11 +31,25 @@ class PropertiesPanel(QWidget):
         self._selected_ids: list[str] = []
         self._updating_dims = False
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
 
         # ---- Dimensions group (always visible) ----
         dims_group = QGroupBox("Dimensions (mm)")
+        dims_group.setCheckable(True)
+        dims_group.setChecked(True)
         dims_form = QFormLayout()
 
         self._width_spin = QDoubleSpinBox()
@@ -67,6 +82,8 @@ class PropertiesPanel(QWidget):
 
         # ---- Quality group (always visible) ----
         quality_group = QGroupBox("Quality")
+        quality_group.setCheckable(True)
+        quality_group.setChecked(True)
         quality_form = QFormLayout()
 
         self._quality_preset_combo = QComboBox()
@@ -129,6 +146,8 @@ class PropertiesPanel(QWidget):
 
         # extrusion group
         ext_group = QGroupBox("Extrusion")
+        ext_group.setCheckable(True)
+        ext_group.setChecked(True)
         ext_form = QFormLayout()
 
         self._height_spin = QDoubleSpinBox()
@@ -146,6 +165,21 @@ class PropertiesPanel(QWidget):
         self._chamfer_spin.setDecimals(2)
         self._chamfer_spin.valueChanged.connect(self._on_param_changed)
         ext_form.addRow("Chamfer:", self._chamfer_spin)
+
+        self._bevel_radius_spin = QDoubleSpinBox()
+        self._bevel_radius_spin.setRange(0.0, 10.0)
+        self._bevel_radius_spin.setValue(0.0)
+        self._bevel_radius_spin.setSuffix(" mm")
+        self._bevel_radius_spin.setDecimals(2)
+        self._bevel_radius_spin.setSingleStep(0.1)
+        self._bevel_radius_spin.valueChanged.connect(self._on_param_changed)
+        ext_form.addRow("Bevel Radius:", self._bevel_radius_spin)
+
+        self._bevel_segments_spin = QSpinBox()
+        self._bevel_segments_spin.setRange(2, 12)
+        self._bevel_segments_spin.setValue(3)
+        self._bevel_segments_spin.valueChanged.connect(self._on_param_changed)
+        ext_form.addRow("Bevel Segments:", self._bevel_segments_spin)
 
         self._tx_spin = QDoubleSpinBox()
         self._tx_spin.setRange(-5000.0, 5000.0)
@@ -172,6 +206,8 @@ class PropertiesPanel(QWidget):
 
         # ---- Ring group (only for ring layers) ----
         self._ring_group = QGroupBox("Ring")
+        self._ring_group.setCheckable(True)
+        self._ring_group.setChecked(True)
         ring_form = QFormLayout()
 
         self._ring_outer_spin = QDoubleSpinBox()
@@ -196,6 +232,8 @@ class PropertiesPanel(QWidget):
 
         # scale group
         scale_group = QGroupBox("Scale")
+        scale_group.setCheckable(True)
+        scale_group.setChecked(True)
         scale_form = QFormLayout()
 
         self._scale_x_spin = QDoubleSpinBox()
@@ -218,6 +256,8 @@ class PropertiesPanel(QWidget):
 
         # color group
         color_group = QGroupBox("Color")
+        color_group.setCheckable(True)
+        color_group.setChecked(True)
         color_layout = QVBoxLayout()
 
         self._color_preview = QLabel()
@@ -239,6 +279,9 @@ class PropertiesPanel(QWidget):
         layout.addStretch()
 
         self._set_enabled(False)
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def _set_enabled(self, enabled: bool) -> None:
         for child in self.findChildren(QWidget):
@@ -279,6 +322,7 @@ class PropertiesPanel(QWidget):
 
         # block signals during update
         for w in [self._height_spin, self._chamfer_spin,
+                  self._bevel_radius_spin, self._bevel_segments_spin,
                   self._scale_x_spin, self._scale_y_spin,
                   self._tx_spin, self._ty_spin]:
             w.blockSignals(True)
@@ -311,6 +355,8 @@ class PropertiesPanel(QWidget):
         # show values from first layer; mark mixed values
         self._height_spin.setValue(first.extrusion_params.height)
         self._chamfer_spin.setValue(first.extrusion_params.chamfer)
+        self._bevel_radius_spin.setValue(first.extrusion_params.bevel_radius)
+        self._bevel_segments_spin.setValue(first.extrusion_params.bevel_segments)
         self._scale_x_spin.setValue(first.extrusion_params.scale_x)
         self._scale_y_spin.setValue(first.extrusion_params.scale_y)
         self._tx_spin.setValue(first.extrusion_params.translate_x)
@@ -333,6 +379,7 @@ class PropertiesPanel(QWidget):
         self._hex_label.setText(f"HEX: {hex_color}")
 
         for w in [self._height_spin, self._chamfer_spin,
+                  self._bevel_radius_spin, self._bevel_segments_spin,
                   self._scale_x_spin, self._scale_y_spin,
                   self._tx_spin, self._ty_spin]:
             w.blockSignals(False)
@@ -345,6 +392,8 @@ class PropertiesPanel(QWidget):
         for layer in layers:
             layer.update_height(self._height_spin.value())
             layer.extrusion_params.chamfer = self._chamfer_spin.value()
+            layer.extrusion_params.bevel_radius = self._bevel_radius_spin.value()
+            layer.extrusion_params.bevel_segments = self._bevel_segments_spin.value()
             layer.update_scale(self._scale_x_spin.value(), self._scale_y_spin.value())
             layer.extrusion_params.translate_x = self._tx_spin.value()
             layer.extrusion_params.translate_y = self._ty_spin.value()

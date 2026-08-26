@@ -25,6 +25,7 @@ from ..models.project import Project, LayerState, LayerGroup
 from .viewport import Viewport3D
 from .layer_panel import LayerPanel
 from .properties import PropertiesPanel
+from .keychain_panel import KeychainPanel
 from .shapes_panel import ShapesPanel
 from . import icons
 
@@ -415,6 +416,9 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self._on_open_project)
         file_menu.addAction(open_action)
 
+        self._recent_menu = file_menu.addMenu("Open &Recent")
+        self._rebuild_recent_menu()
+
         file_menu.addSeparator()
 
         export_stl_action = QAction("Export &STL...", self)
@@ -441,6 +445,13 @@ class MainWindow(QMainWindow):
         export_sel_action.setStatusTip("Export only the selected layers as 3MF")
         export_sel_action.triggered.connect(self._on_export_3mf_selection)
         file_menu.addAction(export_sel_action)
+
+        export_glb_action = QAction("Export &GLB...", self)
+        export_glb_action.setIcon(icons.icon_export())
+        export_glb_action.setShortcut(QKeySequence("Ctrl+G"))
+        export_glb_action.setStatusTip("Export color GLB (Binary GLTF)")
+        export_glb_action.triggered.connect(self._on_export_glb)
+        file_menu.addAction(export_glb_action)
 
         file_menu.addSeparator()
 
@@ -516,6 +527,22 @@ class MainWindow(QMainWindow):
         fit_action.triggered.connect(lambda: self._viewport.fit_to_scene())
         view_menu.addAction(fit_action)
 
+        frame_action = QAction("&Frame Selected", self)
+        frame_action.setShortcut(QKeySequence("Z"))
+        frame_action.setStatusTip("Zoom to the selected layer")
+        frame_action.triggered.connect(self._on_frame_selected)
+        view_menu.addAction(frame_action)
+
+        # Tools menu
+        tools_menu = menu_bar.addMenu("&Tools")
+
+        self._view_keychain = QAction("&Genera Portachiavi", self)
+        self._view_keychain.setCheckable(True)
+        self._view_keychain.setChecked(False)
+        self._view_keychain.setShortcut(QKeySequence("Ctrl+K"))
+        self._view_keychain.triggered.connect(self._toggle_keychain_panel)
+        tools_menu.addAction(self._view_keychain)
+
         # Help menu (rightmost on macOS)
         help_menu = menu_bar.addMenu("&Help")
 
@@ -546,6 +573,7 @@ class MainWindow(QMainWindow):
         # Wire dock toggle actions
         self._properties_dock = None  # will be set in _setup_panels
         self._shapes_dock = None
+        self._keychain_dock = None
         self._view_properties.triggered.connect(self._toggle_properties_dock)
         self._view_shapes.triggered.connect(self._toggle_shapes_dock)
         self._view_history.triggered.connect(self._toggle_history_dock)
@@ -634,6 +662,7 @@ class MainWindow(QMainWindow):
         self._viewport.layer_clicked.connect(self._on_viewport_click)
         self._viewport.gizmo_drag_started.connect(lambda: self._push_undo("Transform"))
         self._viewport.transform_changed.connect(self._on_gizmo_transform)
+        self._viewport.cursor_world_changed.connect(self._on_cursor_world)
         self.setCentralWidget(self._viewport)
 
         # Properties Panel
@@ -679,6 +708,17 @@ class MainWindow(QMainWindow):
         self._shapes_dock.setMaximumWidth(160)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._shapes_dock)
 
+        # Left dock: Keychain generator
+        self._keychain_panel = KeychainPanel()
+        self._keychain_panel.generate_requested.connect(self._on_keychain_generate)
+        self._keychain_panel.preview_requested.connect(self._on_keychain_preview)
+        self._keychain_panel.preview_cleared.connect(self._on_keychain_preview_clear)
+        self._keychain_dock = QDockWidget("Portachiavi", self)
+        self._keychain_dock.setWidget(self._keychain_panel)
+        self._keychain_dock.setMinimumWidth(200)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._keychain_dock)
+        self._keychain_dock.setVisible(False)
+
         # Bottom dock: History panel
         from .history_panel import HistoryPanel
         self._history_panel = HistoryPanel()
@@ -694,6 +734,10 @@ class MainWindow(QMainWindow):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
         self._statusbar.showMessage("Ready — Import an SVG file to begin")
+        # coordinate display (right side)
+        self._coord_label = QLabel("X: 0.00  Y: 0.00  Z: 0.00 mm")
+        self._coord_label.setStyleSheet("color: #999; font-size: 11px; padding: 0 8px; font-family: monospace;")
+        self._statusbar.addPermanentWidget(self._coord_label)
         # permanent info widget
         self._info_label = QLabel()
         self._info_label.setStyleSheet("color: #999; font-size: 11px; padding: 0 8px;")
@@ -1219,6 +1263,25 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export selection:\n{e}")
 
+    @Slot()
+    def _on_export_glb(self) -> None:
+        """Export as color GLB (Binary GLTF)."""
+        from ..core.exporters import export_gltf
+        start_dir = str(self._project._last_import_dir) if self._project._last_import_dir else ""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export GLB", f"{start_dir}/{self._project.name}.glb",
+            "GLB Files (*.glb)"
+        )
+        if not path:
+            return
+
+        parts = self._project.recompute_extrusions()
+        try:
+            export_gltf(parts, path, binary=True)
+            self._statusbar.showMessage(f"Exported GLB: {path}", 4000)
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export GLB:\n{e}")
+
     # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
@@ -1290,6 +1353,7 @@ class MainWindow(QMainWindow):
             project = load_project(path)
             self._apply_new_project(project, path)
             add_recent(path)
+            self._rebuild_recent_menu()
             self._refresh_thumbnail(path)
             self._statusbar.showMessage(f"Loaded: {path}", 4000)
         except Exception as e:
@@ -1351,6 +1415,12 @@ class MainWindow(QMainWindow):
         self._project.recompute_extrusions()
         self._viewport.refresh()
 
+    def _on_frame_selected(self) -> None:
+        """Zoom viewport to the currently selected layer."""
+        sel = self._layer_panel.get_selected_layer_ids()
+        if sel:
+            self._viewport.fit_to_layer(sel[0])
+
     @Slot(str)
     def _on_viewport_click(self, layer_id: str) -> None:
         if not layer_id:
@@ -1365,6 +1435,11 @@ class MainWindow(QMainWindow):
         self._layer_panel.refresh()
         self._update_info_bar()
         self._statusbar.showMessage("Transform applied", 3000)
+
+    @Slot(float, float, float)
+    def _on_cursor_world(self, x: float, y: float, z: float) -> None:
+        """Update status bar with cursor world coordinates."""
+        self._coord_label.setText(f"X: {x:.2f}  Y: {y:.2f}  Z: {z:.2f} mm")
 
     @Slot(list)
     def _on_merge_layers(self, layer_ids: list[str]) -> None:
@@ -1531,3 +1606,64 @@ class MainWindow(QMainWindow):
         self._viewport.fit_to_scene()
         self._statusbar.showMessage(f"Added text: \"{text}\" ({len(shapes)} characters)", 4000)
         self._flush_undo()
+
+    def _toggle_keychain_panel(self, checked: bool) -> None:
+        if self._keychain_dock:
+            self._keychain_dock.setVisible(checked)
+            # hide shapes when keychain is open (they share left dock area)
+            if self._shapes_dock:
+                self._shapes_dock.setVisible(not checked)
+
+    def _on_keychain_generate(self, layers: list) -> None:
+        self._viewport.clear_preview()
+        self._push_undo("Generate Keychain")
+        group = self._project.create_group("Portachiavi")
+        for ls in layers:
+            ls._parent = group
+            group.children.append(ls)
+        self._project._rebuild_flat_list()
+        self._project.recompute_extrusions()
+        self._layer_panel.refresh()
+        self._properties_panel.refresh_dimensions()
+        self._viewport.fit_to_scene()
+        self._statusbar.showMessage(f"Generated keychain: {len(layers)} layers", 4000)
+        self._flush_undo()
+
+    def _on_keychain_preview(self, parts: list) -> None:
+        """Show live keychain preview in the viewport."""
+        self._viewport.set_preview_parts(parts)
+
+    def _on_keychain_preview_clear(self) -> None:
+        """Clear the live keychain preview."""
+        self._viewport.clear_preview()
+
+    # ------------------------------------------------------------------
+    # Recent projects menu
+    # ------------------------------------------------------------------
+
+    def _rebuild_recent_menu(self) -> None:
+        """Rebuild the Open Recent submenu from saved metadata."""
+        from ..core.recent_projects import load_recent
+        self._recent_menu.clear()
+        entries = load_recent()
+        if not entries:
+            empty = QAction("No recent projects", self)
+            empty.setEnabled(False)
+            self._recent_menu.addAction(empty)
+            return
+        for e in entries:
+            p = e["path"]
+            name = e.get("name", Path(p).stem)
+            action = QAction(name, self)
+            action.setStatusTip(p)
+            action.triggered.connect(lambda checked=False, path=p: self._load_project_file(Path(path)))
+            self._recent_menu.addAction(action)
+        self._recent_menu.addSeparator()
+        clear_action = QAction("Clear Recent", self)
+        clear_action.triggered.connect(self._clear_recent)
+        self._recent_menu.addAction(clear_action)
+
+    def _clear_recent(self) -> None:
+        from ..core.recent_projects import save_recent
+        save_recent([])
+        self._rebuild_recent_menu()

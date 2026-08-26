@@ -1,4 +1,4 @@
-"""Exporters: STL, OBJ (with MTL), and color 3MF for Bambu Studio.
+"""Exporters: STL, OBJ (with MTL), color 3MF for Bambu Studio, and GLTF/GLB.
 
 The 3MF exporter creates a valid 3MF package compatible with Bambu Studio:
 - Separate object parts per SVG layer
@@ -18,7 +18,7 @@ from xml.etree import ElementTree as ET
 import numpy as np
 
 from .extruder import ExtrudedPart
-from .mesh_ops import merge_parts, compute_normals, fix_normals_direction
+from .mesh_ops import merge_parts, compute_normals
 
 
 def export_stl(
@@ -38,7 +38,6 @@ def _export_stl_binary(parts: list[ExtrudedPart], path: Path) -> Path:
     verts, faces = merge_parts(parts)
     if len(faces) == 0:
         raise ValueError("No faces to export")
-    faces = fix_normals_direction(verts, faces)
     normals = compute_normals(verts, faces)
     with open(path, "wb") as f:
         header = b"MakerStl Export" + b"\x00" * (80 - 15)
@@ -61,7 +60,6 @@ def _export_stl_ascii(parts: list[ExtrudedPart], path: Path) -> Path:
     verts, faces = merge_parts(parts)
     if len(faces) == 0:
         raise ValueError("No faces to export")
-    faces = fix_normals_direction(verts, faces)
     normals = compute_normals(verts, faces)
     with open(path, "w") as f:
         f.write("solid MakerStl\n")
@@ -148,7 +146,7 @@ def export_3mf(
         fixed = ExtrudedPart(
             id=part.id,
             vertices=part.vertices,
-            faces=_ensure_ccw_winding(part.vertices, part.faces),
+            faces=part.faces.copy(),
             color=part.color,
             name=part.name,
         )
@@ -231,25 +229,6 @@ def _build_3d_model(parts: list[ExtrudedPart], title: str) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + xml_str
 
 
-def _ensure_ccw_winding(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    """Ensure all triangles are CCW when viewed from +Z direction.
-
-    3MF uses right-hand rule: vertices ordered CCW = normal pointing toward viewer.
-    For top faces (Z=height), normal must point up (+Z).
-    For bottom faces (Z=0), winding is already reversed by extruder.
-    This function ensures consistent winding for correct slicer interpretation.
-    """
-    fixed_faces = faces.copy()
-    for i, face in enumerate(fixed_faces):
-        v0, v1, v2 = verts[face[0]], verts[face[1]], verts[face[2]]
-        # cross product Z component: positive = CCW from +Z view
-        cross_z = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0])
-        if cross_z < 0:
-            # flip winding to make CCW
-            fixed_faces[i] = [face[0], face[2], face[1]]
-    return fixed_faces
-
-
 def _build_model_settings(
     parts: list[ExtrudedPart],
     color_to_extruder: dict[tuple[int, int, int], int],
@@ -303,3 +282,64 @@ def _build_project_settings(
     }
 
     return json.dumps(settings, indent=2) + "\n"
+
+
+def export_gltf(
+    parts: list[ExtrudedPart],
+    output_path: str | Path,
+    binary: bool = True,
+) -> Path:
+    """Export parts as GLTF (GLB) or GLTF+JSON using trimesh.
+
+    Args:
+        parts: Extruded parts to export.
+        output_path: Output file path (.glb or .gltf).
+        binary: If True, export as GLB (binary). If False, export as .gltf.
+    """
+    import trimesh
+
+    output_path = Path(output_path)
+    if len(parts) == 0:
+        raise ValueError("No parts to export")
+
+    meshes: list[trimesh.Trimesh] = []
+    colors = []
+    for part in parts:
+        mesh = trimesh.Trimesh(
+            vertices=part.vertices.copy(),
+            faces=part.faces.copy(),
+            process=False,
+        )
+        meshes.append(mesh)
+        colors.append(part.color)
+
+    # create a scene with per-mesh materials
+    scene = trimesh.Scene()
+    for i, (mesh, color) in enumerate(zip(meshes, colors)):
+        r, g, b = color
+        # trimesh expects RGBA float [0,1]
+        rgba = np.array([r / 255.0, g / 255.0, b / 255.0, 1.0], dtype=np.float64)
+        mesh.visual = trimesh.visual.TextureVisuals(
+            material=trimesh.visual.material.SimpleMaterial(
+                diffuse=rgba * 255,
+                ambient=[25.5, 25.5, 25.5, 255],
+                specular=[127.5, 127.5, 127.5, 255],
+                glossiness=200,
+            )
+        )
+        name = f"part_{i}_{part.name or part.id}"
+        scene.add_geometry(mesh, node_name=name, geom_name=name)
+
+    if binary or output_path.suffix.lower() == ".glb":
+        data = scene.export(file_type="glb")
+        output_path = output_path.with_suffix(".glb")
+    else:
+        data = scene.export(file_type="gltf")
+        output_path = output_path.with_suffix(".gltf")
+
+    if isinstance(data, bytes):
+        output_path.write_bytes(data)
+    else:
+        output_path.write_text(data, encoding="utf-8")
+
+    return output_path

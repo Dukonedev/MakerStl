@@ -630,8 +630,12 @@ class Project:
     # Extrusion
     # ------------------------------------------------------------------
 
-    def recompute_extrusions(self) -> list[ExtrudedPart]:
-        """Rebuild all extruded parts, respecting group visibility.
+    def recompute_extrusions(self, dirty_layer_ids: list[str] | None = None) -> list[ExtrudedPart]:
+        """Rebuild extruded parts, respecting group visibility.
+
+        Args:
+            dirty_layer_ids: If provided, only re-extrude these layers.
+                If None, re-extrude all visible layers (full recompute).
 
         The base layer is the last visible layer in tree order.
         global_scale is applied ONLY to the base layer.
@@ -647,6 +651,13 @@ class Project:
 
         for layer in self.layers:
             if not layer.effective_visible or layer.triangulated_mesh is None:
+                continue
+
+            # incremental mode: skip layers not in the dirty set
+            if dirty_layer_ids is not None and layer.svg_layer.id not in dirty_layer_ids:
+                # still collect existing parts for the return value
+                if layer.extruded_part is not None:
+                    parts.append(layer.extruded_part)
                 continue
 
             params = layer.extrusion_params

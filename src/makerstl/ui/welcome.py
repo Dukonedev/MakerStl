@@ -21,6 +21,7 @@ class WelcomeScreen(QWidget):
     open_project = Signal()
     open_recent = Signal(str)  # file path
     import_svg = Signal(str)  # SVG file path dropped on welcome
+    open_keychain = Signal()  # open keychain generator directly
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -144,6 +145,21 @@ class WelcomeScreen(QWidget):
             QPushButton#donateBtn:hover {
                 color: #2680eb;
             }
+            QPushButton#toolBtn {
+                background-color: #1a6b3a;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 14px 28px;
+                font-size: 15px;
+                font-weight: bold;
+            }
+            QPushButton#toolBtn:hover {
+                background-color: #22884a;
+            }
+            QPushButton#toolBtn:pressed {
+                background-color: #145530;
+            }
         """)
 
         layout = QVBoxLayout(self)
@@ -195,6 +211,12 @@ class WelcomeScreen(QWidget):
         btn_open.setCursor(Qt.PointingHandCursor)
         btn_open.clicked.connect(self.open_project.emit)
         btn_row.addWidget(btn_open)
+
+        btn_keychain = QPushButton("Keychain Tool")
+        btn_keychain.setObjectName("toolBtn")
+        btn_keychain.setCursor(Qt.PointingHandCursor)
+        btn_keychain.clicked.connect(self.open_keychain.emit)
+        btn_row.addWidget(btn_keychain)
 
         btn_row.addStretch()
         layout.addWidget(btn_container)

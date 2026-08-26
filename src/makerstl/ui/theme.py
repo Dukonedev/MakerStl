@@ -128,6 +128,26 @@ QGroupBox::title {
     padding: 0 4px;
     background: #303030;
 }
+QGroupBox::indicator {
+    width: 12px;
+    height: 12px;
+    subcontrol-origin: margin;
+    subcontrol-position: top right;
+    top: 3px;
+    right: 8px;
+}
+QGroupBox::indicator:checked {
+    image: none;
+    border: 2px solid #666;
+    border-radius: 2px;
+    background: #505050;
+}
+QGroupBox::indicator:unchecked {
+    image: none;
+    border: 2px solid #666;
+    border-radius: 2px;
+    background: #383838;
+}
 
 /* ---- Form layouts / labels ---- */
 QLabel {
